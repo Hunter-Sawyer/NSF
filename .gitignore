@@ -6,3 +6,15 @@ test\*
 Child*.xml
 *.npy
 GreenEVT\genetic_alg\GeoJson\*
+GreenEVT/data/UDS.db
+GreenEVT/data/dump.sql
+GreenEVT/data/evacuationdata.db.backup
+GreenEVT/data/sumo_network/greensboro.net.xml
+GreenEVT/data/ActivityGenTAZ/activitygenTAZ.rou.alt.xml
+GreenEVT/data/ActivityGenTAZ/activitygenTAZ.rou.xml
+*_trips.rou.xml
+*_tracker.xml
+*_traffic.xml
+*rou.xml
+*rou.alt.xml
+GreenEVT/genetic_alg/intermediate_files/logs/*
