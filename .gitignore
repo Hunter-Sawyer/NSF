@@ -1,0 +1,8 @@
+GreenEVT\genetic_alg\intermediate_files\*.xml
+GreenEVT\genetic_alg\static_files\Child*
+.DS_Store 
+*.pyc
+test\*
+Child*.xml
+*.npy
+GreenEVT\genetic_alg\GeoJson\*
