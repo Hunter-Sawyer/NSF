@@ -1,5 +1,6 @@
 import string
 import os,sys
+from turtle import pd
 if 'SUMO_HOME' in os.environ:
     sys.path.append(os.path.join(os.environ['SUMO_HOME'], 'tools'))
 
@@ -11,6 +12,7 @@ from xml.dom import minidom
 import os
 from tqdm import tqdm
 import random
+import geopandas as gpd
 
 
 #This file creates the XML for the statistics file, including all default params, not including assigning pops to streers
@@ -341,6 +343,75 @@ def assign_jobs(output_file_name,job_assignments,real_edges,population_file_temp
         doc.writexml(f)
     return
     
+def assign_pop_to_streets_with_from_census(block_groups_path = "..\\..\\tl_2019_06_bg\\tl_2019_06_bg.shp", 
+associated_pop_path = "..\\..\\tl_2019_06_bg\\block_groups_pop\\ACSDT5Y2020.B01003-Data.csv",
+network_path = "..\\data\\Palo Alto\\PA.network.net.xml",
+output_path = "../genetic_alg/static_files/pop_file.xml"):
+    doc = create_stat_XML()
+
+    block_groups = gpd.read_file(block_groups_path)
+    pop_data = pd.read_csv(associated_pop_path)
+
+    block_groups_df = create_pop_lookup(block_groups_path, associated_pop_path)
+
+    NetDom = minidom.parse(network_path)
+    root = doc.documentElement
+
+    streets_node = root.getElementsByTagName("streets")[0]
+    edges = list(NetDom.getElementsByTagName("edge"))
+
+    for taz in block_groups_df.itertuples():
+        taz_population = taz.population
+        taz_shape = taz.geometry
+        edges_within_taz = []
+        for edge in edges:
+            if edge.getAttribute("function") != "internal" and edge.getAttribute("shape") != '':
+                shape = edge.getAttribute("shape")
+                shape = shape.split(" ")
+                for i in range(len(shape)):
+                    shape[i] = shape[i].split(",")
+                    shape[i] = (float(shape[i][0]), float(shape[i][1]))
+
+                dist = sumolib.geomhelper.distancePointToPolygon((taz_shape.centroid.x, taz_shape.centroid.y), shape)
+                if dist <= 1:  # Adjust the threshold as needed
+                    edges_within_taz.append(edge.getAttribute("id"))
+        
+        if edges_within_taz:
+            pop_per_edge = taz_population / len(edges_within_taz)
+            for edge_id in edges_within_taz:
+                street = doc.createElement("street")
+                street.setAttribute("edge", str(edge_id))
+                street.setAttribute("population", str(pop_per_edge))
+                street.setAttribute("workPosition", "0")  # Default work position
+                streets_node.appendChild(street)
+
+
+
+
+
+def create_pop_lookup(block_groups_path = "..\\..\\tl_2019_06_bg\\tl_2019_06_bg.shp", 
+associated_pop_path = "..\\..\\tl_2019_06_bg\\block_groups_pop\\ACSDT5Y2020.B01003-Data.csv"):
+    block_groups = gpd.read_file(block_groups_path)
+    pop_data = pd.read_csv(associated_pop_path)
+
+    geo_id_list = pop_data['GEO_ID'].tolist()
+    sublist = [s[-12:] for s in geo_id_list]
+
+    # Create matching GEOID column in the CSV
+    pop_data['GEOID'] = pop_data['GEO_ID'].str[-12:]
+
+    # Create lookup dictionary
+    pop_lookup = dict(
+        zip(
+            pop_data['GEOID'],
+            pop_data['B01003_001E']
+        )
+    )
+
+    block_groups['population'] = block_groups['GEOID'].map(pop_lookup)
+    block_groups = block_groups.dropna(subset=['population'])  # Drop rows with NaN population values
+
+    return block_groups
 
 
 #assign_pop_to_street()

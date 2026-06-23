@@ -266,19 +266,34 @@ def plot_shapefile(shapefile_path = "..\\..\\NCDOT_2024_Traffic_Segment_Shapefil
     #plt.show()
 
 def exclusion_percents(exclusion_percent=0.2, shapefile_path = "..\\..\\NCDOT_2024_Traffic_Segment_Shapefile_Description\\NCDOT_2024_AADT_Segments.shp", column=None, cmap='viridis', legend=True,
-network_path = "../data/sumo_network/greensboro.net.xml",seed=42):
+network_path = "../data/sumo_network/greensboro.net.xml",seed=42,bbox_coords=box(-80.62,35.676,-79.2,37)):
     net = sumolib.net.readNet(network_path)
     random.seed(seed)
 
     doc = minidom.Document()
     root = doc.documentElement
 
+    xmin, ymin, xmax, ymax = net.getBoundary()
+
+    lon1, lat1 = net.convertXY2LonLat(xmin, ymin)
+    lon2, lat2 = net.convertXY2LonLat(xmax, ymax)
+
+    print(lon1, lat1, lon2, lat2)
+
+    bbox = box(
+        min(lon1, lon2),
+        min(lat1, lat2),
+        max(lon1, lon2),
+        max(lat1, lat2)
+    )
+
+
     gdf = gpd.read_file(shapefile_path)
     gdf_LL = gdf.to_crs(epsg=4326)
     print(gdf_LL.crs)
 
     print(gdf_LL.head()[gdf.geometry.name])
-    bbox = gpd.GeoDataFrame(geometry=[box(-80.62,35.676,-79.2,37)], crs=gdf.crs)
+    bbox = gpd.GeoDataFrame(geometry=[bbox], crs="EPSG:4326")
 
 
 
@@ -291,18 +306,33 @@ network_path = "../data/sumo_network/greensboro.net.xml",seed=42):
             print(f"Found {len(edges)} neighboring edges in SUMO network:")
             sorted_edges = sorted([(dist,edge) for edge,dist in edges], key=lambda x:x[0])
             print(f"Closest edge is {sorted_edges[0][1]} at distance {sorted_edges[0][0]} meters")
-            if random.random() > exclusion_percent:  # Exclude the specified percentage of the matched edges
+            if random.random() >= exclusion_percent:  # Exclude the specified percentage of the matched edges
                 road_edge.append((road, sorted_edges[0][1].getID()))
         else:
             print("No neighboring edges found in SUMO network.")
         
     with open(f"matched_edges_{int(exclusion_percent*100)}_excluded.txt","w") as f:
         for road, edge_id in road_edge:
-            f.write(f"{road.AADT}:{edge_id}\n")
+            #print(f"Shapefile road segment {road} matched to SUMO edge ID: {edge_id}")
+            print(road.AHEAD_AADT)
+            if road.AHEAD_AADT is not None:
+                f.write(f"{int(road.AHEAD_AADT)}:{edge_id}\n")
+            #f.write(f"{road.AADT}:{edge_id}\n")
 
 
+#same as exclusion_percents buth for a geojson instead of a shapefile
+def exclusion_percents_GeoJson(exclusion_percent=0.0, geojson_path = "..\\data\\Palo Alto\\Traffic_volumes_AADT.geojson", 
+column=None, cmap='viridis', legend=True,network_path = "..\\data\\Palo Alto\\PA.network.net.xml",seed=42):
+    net = sumolib.net.readNet(network_path)
+    random.seed(seed)
+
+    doc = minidom.Document()
+    root = doc.documentElement
+
+
+exclusion_percents(0.0,shapefile_path = "..\\..\\Cali_traffic_uknown\\Annual_average_daily_traffic.shp", network_path = "..\\data\\Palo Alto\\PA.network.net.xml",bbox_coords=box(-122.25,37.35,-122.0,37.5))
 #exclusion_percents(0.35,seed=891)
-generate_radial_triangles(center=(40000,35888), radius=65000-35888, n_triangles=5)
+#generate_radial_triangles(center=(40000,35888), radius=65000-35888, n_triangles=5)
 #plot_shapefile()
 #center_point = [40000,35888]
 #distance_From_center = 65000-35888
