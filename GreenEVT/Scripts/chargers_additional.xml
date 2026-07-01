@@ -1,0 +1,8 @@
+<?xml version="1.0" ?>
+  <additional>
+    <chargingStation lane="491655141_0" id="0" startPos="0" endPos="20" friendlyPos="true" power="100" totalPower="1000"/>
+    <chargingStation lane="491655141_0" id="1" startPos="0" endPos="20" friendlyPos="true" power="100" totalPower="1000"/>
+    <chargingStation lane="-73316997_0" id="2" startPos="0" endPos="20" friendlyPos="true" power="100" totalPower="1000"/>
+    <chargingStation lane="-678459758#0_0" id="3" startPos="0" endPos="20" friendlyPos="true" power="100" totalPower="1000"/>
+    <chargingStation lane="-678459758#0_0" id="4" startPos="0" endPos="20" friendlyPos="true" power="100" totalPower="1000"/>
+  </additional>
