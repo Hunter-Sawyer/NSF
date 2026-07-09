@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2026-07-08T15:14:35.149981-06:00 by Eclipse SUMO sumo 1.25.0
+<sumoConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
+
+    <input>
+        <net-file value="..\data\Palo Alto\PA.network.net.xml"/>
+        <route-files value=".\test_PA_rou.xml"/>
+        <additional-files value=".\chargers_additional.xml"/>
+    </input>
+
+    <output>
+        <chargingstations-output value=".\charging_stations_output.xml&#45;&#45;suppress-errors"/>
+    </output>
+
+    <traci_server>
+        <remote-port value="49342"/>
+    </traci_server>
+
+</sumoConfiguration>
+-->
+
+<chargingstations-export>
+    <chargingStation id="0" totalEnergyCharged="0.08" chargingSteps="3">
+        <vehicle id="h163c1:1" type="electric_vehicle" totalEnergyChargedIntoVehicle="0.03" chargingBegin="32777.00" chargingEnd="32777.00">
+            <step time="32777.00" chargingStatus="chargingStopped" energyCharged="0.03" partialCharge="0.03" power="100.00" efficiency="0.95" actualBatteryCapacity="16941.01" maximumBatteryCapacity="35000.00"/>
+        </vehicle>
+        <vehicle id="h321c1:3" type="electric_vehicle" totalEnergyChargedIntoVehicle="0.03" chargingBegin="66978.00" chargingEnd="66978.00">
+            <step time="66978.00" chargingStatus="chargingStopped" energyCharged="0.03" partialCharge="0.05" power="100.00" efficiency="0.95" actualBatteryCapacity="16584.61" maximumBatteryCapacity="35000.00"/>
+        </vehicle>
+        <vehicle id="h160c1:5" type="electric_vehicle" totalEnergyChargedIntoVehicle="0.03" chargingBegin="70056.00" chargingEnd="70056.00">
+            <step time="70056.00" chargingStatus="chargingStopped" energyCharged="0.03" partialCharge="0.08" power="100.00" efficiency="0.95" actualBatteryCapacity="16940.63" maximumBatteryCapacity="35000.00"/>
+        </vehicle>
+    </chargingStation>
+    <chargingStation id="1" totalEnergyCharged="0.08" chargingSteps="3">
+        <vehicle id="randUni132:1" type="electric_vehicle" totalEnergyChargedIntoVehicle="0.03" chargingBegin="10774.00" chargingEnd="10774.00">
+            <step time="10774.00" chargingStatus="chargingStopped" energyCharged="0.03" partialCharge="0.03" power="100.00" efficiency="0.95" actualBatteryCapacity="17347.49" maximumBatteryCapacity="35000.00"/>
+        </vehicle>
+        <vehicle id="h117c1:1" type="electric_vehicle" totalEnergyChargedIntoVehicle="0.03" chargingBegin="32690.00" chargingEnd="32690.00">
+            <step time="32690.00" chargingStatus="chargingStopped" energyCharged="0.03" partialCharge="0.05" power="100.00" efficiency="0.95" actualBatteryCapacity="17049.52" maximumBatteryCapacity="35000.00"/>
+        </vehicle>
+        <vehicle id="h95c1:1" type="electric_vehicle" totalEnergyChargedIntoVehicle="0.03" chargingBegin="33538.00" chargingEnd="33538.00">
+            <step time="33538.00" chargingStatus="chargingStopped" energyCharged="0.03" partialCharge="0.08" power="100.00" efficiency="0.95" actualBatteryCapacity="16994.62" maximumBatteryCapacity="35000.00"/>
+        </vehicle>
+    </chargingStation>
+    <chargingStation id="2" totalEnergyCharged="0.03" chargingSteps="1">
+        <vehicle id="h379c1:1" type="electric_vehicle" totalEnergyChargedIntoVehicle="0.03" chargingBegin="34392.00" chargingEnd="34392.00">
+            <step time="34392.00" chargingStatus="chargingStopped" energyCharged="0.03" partialCharge="0.03" power="100.00" efficiency="0.95" actualBatteryCapacity="16673.10" maximumBatteryCapacity="35000.00"/>
+        </vehicle>
+    </chargingStation>
+    <chargingStation id="3" totalEnergyCharged="0.16" chargingSteps="6">
+        <vehicle id="randUni27:1" type="electric_vehicle" totalEnergyChargedIntoVehicle="0.03" chargingBegin="11558.00" chargingEnd="11558.00">
+            <step time="11558.00" chargingStatus="chargingStopped" energyCharged="0.03" partialCharge="0.03" power="100.00" efficiency="0.95" actualBatteryCapacity="17041.52" maximumBatteryCapacity="35000.00"/>
+        </vehicle>
+        <vehicle id="h390c1:1" type="electric_vehicle" totalEnergyChargedIntoVehicle="0.03" chargingBegin="32291.00" chargingEnd="32291.00">
+            <step time="32291.00" chargingStatus="chargingStopped" energyCharged="0.03" partialCharge="0.05" power="100.00" efficiency="0.95" actualBatteryCapacity="17084.32" maximumBatteryCapacity="35000.00"/>
+        </vehicle>
+        <vehicle id="h282c1:1" type="electric_vehicle" totalEnergyChargedIntoVehicle="0.03" chargingBegin="32417.00" chargingEnd="32417.00">
+            <step time="32417.00" chargingStatus="chargingStopped" energyCharged="0.03" partialCharge="0.08" power="100.00" efficiency="0.95" actualBatteryCapacity="17429.02" maximumBatteryCapacity="35000.00"/>
+        </vehicle>
+        <vehicle id="h108c1:1" type="electric_vehicle" totalEnergyChargedIntoVehicle="0.03" chargingBegin="32883.00" chargingEnd="32883.00">
+            <step time="32883.00" chargingStatus="chargingStopped" energyCharged="0.03" partialCharge="0.11" power="100.00" efficiency="0.95" actualBatteryCapacity="17070.73" maximumBatteryCapacity="35000.00"/>
+        </vehicle>
+        <vehicle id="h132c1:3" type="electric_vehicle" totalEnergyChargedIntoVehicle="0.03" chargingBegin="33104.00" chargingEnd="33104.00">
+            <step time="33104.00" chargingStatus="chargingStopped" energyCharged="0.03" partialCharge="0.13" power="100.00" efficiency="0.95" actualBatteryCapacity="17073.29" maximumBatteryCapacity="35000.00"/>
+        </vehicle>
+        <vehicle id="randUni31:1" type="electric_vehicle" totalEnergyChargedIntoVehicle="0.03" chargingBegin="84816.00" chargingEnd="84816.00">
+            <step time="84816.00" chargingStatus="chargingStopped" energyCharged="0.03" partialCharge="0.16" power="100.00" efficiency="0.95" actualBatteryCapacity="17473.86" maximumBatteryCapacity="35000.00"/>
+        </vehicle>
+    </chargingStation>
+    <chargingStation id="4" totalEnergyCharged="0.00" chargingSteps="0"/>
+</chargingstations-export>

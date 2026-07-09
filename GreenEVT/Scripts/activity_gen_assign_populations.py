@@ -481,16 +481,34 @@ network_path = "..\\data\\Palo Alto\\PA.network.net.xml"):
 
     for station_id, (lat, lon) in station_locations.items():
         x,y = net.convertLonLat2XY(lon, lat)
-        edges = net.getNeighboringEdges(x, y,100)
+        edges = sorted(net.getNeighboringEdges(x, y, 100), key=lambda e: e[1])
 
-        if edges:
-            closest_edge, distance = min(edges, key=lambda e: e[1])
-            if distance <= 30:  # Adjust the threshold as needed
-                edge_id = closest_edge.getID()
-                edge_o = net.getEdge(edge_id)
-                lane = edge_o.getLanes()[0] #This should be the outermost lane
-                lane_id = lane.getID()
-                charging_station_assignments[station_id] = lane_id
+        for edge, distance in edges:
+            print(f"Evaluating edge {edge.getID()} for charging station {station_id} at distance {distance:.2f}")
+            if distance > 200:  # Adjust the threshold as needed
+                continue
+
+            valid_lane = None
+            for lane in edge.getLanes():
+                print(f"lane alllows passenger: {lane.allows('passenger')}, lane ID: {lane.getID()}")
+                if lane.allows("passenger") and lane.getLength() >= 20 and not edge.getID().startswith(":"):
+                    valid_lane = lane
+                    break
+            
+            if valid_lane is not None:
+                print(f"Assigning charging station {station_id} to lane {valid_lane.getID()} on edge {edge.getID()}")
+                charging_station_assignments[station_id] = valid_lane.getID()
+                break
+
+
+        # if edges:
+        #     closest_edge, distance = min(edges, key=lambda e: e[1])
+        #     if distance <= 30:  # Adjust the threshold as needed
+        #         edge_id = closest_edge.getID()
+        #         edge_o = net.getEdge(edge_id)
+        #         lane = edge_o.getLanes()[0] #This should be the outermost lane
+        #         lane_id = lane.getID()
+        #         charging_station_assignments[station_id] = lane_id
 
     
 
@@ -514,7 +532,7 @@ network_path = "..\\data\\Palo Alto\\PA.network.net.xml"):
         
     output_path = "./chargers_additional.xml"
     with open(output_path, "w") as f:
-        doc.writexml(f, indent="  ", addindent="  ", newl="\n")
+        doc.writexml(f, indent="  ", addindent="  ")
 
 def create_pop_lookup(block_groups_path = "..\\..\\tl_2019_06_bg\\tl_2019_06_bg.shp", 
 associated_pop_path = "..\\..\\tl_2019_06_bg\\block_groups_pop\\ACSDT5Y2020.B01003-Data.csv"):
@@ -581,7 +599,7 @@ def assign_vehicles_new_vtype(route_file_path = ".\\test_PA_rou.xml", new_vtype_
 
     # Save the modified route file
     with open(route_file_path, "w") as f:
-        doc.writexml(f, indent="  ", addindent="  ", newl="\n")
+        doc.writexml(f, indent="  ", addindent="  ")
 #junctions = get_junctions()
 #TAZ = grab_taz(sqlite3.connect("../data/UDS.db"))
 

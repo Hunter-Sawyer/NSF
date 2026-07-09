@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
-<!-- generated on 2026-06-30T21:59:21.092686-06:00 by Eclipse SUMO sumo 1.25.0
+<!-- generated on 2026-07-08T21:28:18.551090-06:00 by Eclipse SUMO sumo 1.25.0
 <sumoConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
 
     <input>
@@ -13,8 +13,12 @@
         <chargingstations-output value=".\charging_stations_output.xml"/>
     </output>
 
+    <processing>
+        <time-to-teleport value="-1"/>
+    </processing>
+
     <traci_server>
-        <remote-port value="56240"/>
+        <remote-port value="59340"/>
     </traci_server>
 
 </sumoConfiguration>
