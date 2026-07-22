@@ -1,5 +1,6 @@
 import string
 import os,sys
+from turtle import pd
 if 'SUMO_HOME' in os.environ:
     sys.path.append(os.path.join(os.environ['SUMO_HOME'], 'tools'))
 
@@ -11,6 +12,11 @@ from xml.dom import minidom
 import os
 from tqdm import tqdm
 import random
+import geopandas as gpd
+import pandas as pd
+
+from shapely.geometry import LineString
+from pyproj import CRS
 
 
 #This file creates the XML for the statistics file, including all default params, not including assigning pops to streers
@@ -341,10 +347,259 @@ def assign_jobs(output_file_name,job_assignments,real_edges,population_file_temp
         doc.writexml(f)
     return
     
+def assign_pop_to_streets_with_from_census(block_groups_path = "..\\..\\tl_2019_06_bg\\tl_2019_06_bg.shp", 
+associated_pop_path = "..\\..\\tl_2019_06_bg\\block_groups_pop\\ACSDT5Y2020.B01003-Data.csv",
+network_path = "..\\data\\Palo Alto\\PA.network.net.xml",
+output_path = "../genetic_alg/static_files/pop_file.xml"):
+    doc = create_stat_XML()
+
+    #block_groups = gpd.read_file(block_groups_path)
+    #pop_data = pd.read_csv(associated_pop_path)
+
+    block_groups_df = create_pop_lookup(block_groups_path, associated_pop_path)
+    print(f"Loaded {len(block_groups_df)} block groups with population data")
+    print(f"CRS of block groups: {block_groups_df.crs}")
+
+    net = sumolib.net.readNet(network_path)
+
+    # try:
+    proj_string = net.getLocationOffset()
+
+    net_proj = net.getGeoProj()
+    proj4_string = net_proj.srs
+
+    if net_proj:
+        print("SUMO projection found:")
+        print(net_proj)
+
+        block_groups_df = block_groups_df.to_crs(CRS.from_proj4(proj4_string))
+
+        print("Reprojected TAZs to SUMO CRS")
+    
+    # except Exception as e:
+    #     print("WARNING: Could not automatically project TAZs")
+    #     print(e)
+    #     print(
+    #         "Make sure your block groups and SUMO network "
+    #         "already use the same coordinate system."
+    #     )
+
+    # print(block_groups_df.geometry.iloc[5])
+    # print(net.getEdges()[0].getShape()[0])
+    print(net.getLocationOffset())
+
+    ox, oy = net.getLocationOffset()
+    block_groups_df['geometry'] = block_groups_df['geometry'].translate(xoff=ox, yoff=oy)
+    # print(block_groups_df.geometry.iloc[5])
+    print(net.getLocationOffset())
+    print(net.getEdges()[0].getShape()[0])
+
+    # exit()
+
+    root = doc.documentElement
+    streets_node = root.getElementsByTagName("streets")[0]
+
+    # Pre-build edge geometries once
+    print("Building edge geometries...")
+
+    edge_geometries = []
+
+    for edge in net.getEdges():
+        # Skip internal/junction edges
+        if edge.isSpecial():
+            continue
+
+        shape = edge.getShape()
+        if len(shape) < 2:
+            continue
+
+        edge_geometries.append((edge.getID(),LineString(shape)))
+
+    print(f"Loaded {len(edge_geometries)} usable edges")
+
+    for taz in block_groups_df.itertuples():
+
+        print(
+            f"Processing TAZ {taz.GEOID} "
+            f"with population {taz.population}"
+            f" And first geometry point {taz.geometry.centroid.x}, {taz.geometry.centroid.y}"
+        )
+
+        taz_population = taz.population
+        taz_shape = taz.geometry
+
+        edges_within_taz = []
+
+        for edge_id, edge_geom in edge_geometries:
+
+            # Option 1:
+            # Any edge touching the TAZ counts
+            if edge_geom.intersects(taz_shape):
+                edges_within_taz.append(edge_id)
+
+            # Option 2 (stricter):
+            # if taz_shape.contains(edge_geom.centroid):
+            #     edges_within_taz.append(edge_id)
+
+        if not edges_within_taz:
+            continue
+
+        print(f"Found {len(edges_within_taz)} edges within TAZ {taz.GEOID}")
+
+        pop_per_edge = (
+            int(taz_population) / len(edges_within_taz)
+        )
+
+        for edge_id in edges_within_taz:
+            street = doc.createElement("street")
+            street.setAttribute("edge",str(edge_id))
+            street.setAttribute("population",str(pop_per_edge))
+            street.setAttribute("workPosition","1")
+
+            streets_node.appendChild(street)
+
+    with open(output_path, "w") as f:
+        doc.writexml(f,indent="  ",addindent="  ",newl="\n")
+
+    print("Finished writing:", output_path)
+
+def assign_charging_stations_to_streets(charging_station_data_path = "..\\data\\Palo Alto\\ElectricVehicleChargingStationUsageJuly2011Dec2020_2797601782859221543.csv",
+network_path = "..\\data\\Palo Alto\\PA.network.net.xml"):
+    charging_stations_df = pd.read_csv(charging_station_data_path)
+    
+    net = sumolib.net.readNet(network_path)
+
+    charging_station_assignments = {}
+
+    station_locations = (
+        charging_stations_df[['Station Name', 'Latitude', 'Longitude']]
+        .drop_duplicates('Station Name')
+        .set_index('Station Name')
+        .apply(tuple, axis=1)
+        .to_dict()
+    )
+
+    for station_id, (lat, lon) in station_locations.items():
+        x,y = net.convertLonLat2XY(lon, lat)
+        edges = sorted(net.getNeighboringEdges(x, y, 100), key=lambda e: e[1])
+
+        for edge, distance in edges:
+            print(f"Evaluating edge {edge.getID()} for charging station {station_id} at distance {distance:.2f}")
+            if distance > 200:  # Adjust the threshold as needed
+                continue
+
+            valid_lane = None
+            for lane in edge.getLanes():
+                print(f"lane alllows passenger: {lane.allows('passenger')}, lane ID: {lane.getID()}")
+                if lane.allows("passenger") and lane.getLength() >= 20 and not edge.getID().startswith(":"):
+                    valid_lane = lane
+                    break
+            
+            if valid_lane is not None:
+                print(f"Assigning charging station {station_id} to lane {valid_lane.getID()} on edge {edge.getID()}")
+                charging_station_assignments[station_id] = valid_lane.getID()
+                break
 
 
+        # if edges:
+        #     closest_edge, distance = min(edges, key=lambda e: e[1])
+        #     if distance <= 30:  # Adjust the threshold as needed
+        #         edge_id = closest_edge.getID()
+        #         edge_o = net.getEdge(edge_id)
+        #         lane = edge_o.getLanes()[0] #This should be the outermost lane
+        #         lane_id = lane.getID()
+        #         charging_station_assignments[station_id] = lane_id
+
+    
+
+    doc = minidom.Document()
+    root = doc.documentElement
+    doc.appendChild(doc.createElement("additional"))
+    for index ,item in enumerate(charging_station_assignments.items()):
+        station_id, lane_id = item
+        station_element = doc.createElement("chargingStation")
+        #station_element.setAttribute("stationID", str(station_id))
+        station_element.setAttribute("lane", str(lane_id))
+        station_element.setAttribute("id", str(index))
+        station_element.setAttribute("startPos", "0")
+        station_element.setAttribute("endPos", "20")
+        station_element.setAttribute("friendlyPos", str(True).lower())
+        station_element.setAttribute("power", "100")
+        station_element.setAttribute("totalPower", "1000")
+        
+
+        doc.documentElement.appendChild(station_element)
+        
+    output_path = "./chargers_additional.xml"
+    with open(output_path, "w") as f:
+        doc.writexml(f, indent="  ", addindent="  ")
+
+def create_pop_lookup(block_groups_path = "..\\..\\tl_2019_06_bg\\tl_2019_06_bg.shp", 
+associated_pop_path = "..\\..\\tl_2019_06_bg\\block_groups_pop\\ACSDT5Y2020.B01003-Data.csv"):
+    block_groups = gpd.read_file(block_groups_path)
+    pop_data = pd.read_csv(associated_pop_path)
+
+    geo_id_list = pop_data['GEO_ID'].tolist()
+    sublist = [s[-12:] for s in geo_id_list]
+
+    # Create matching GEOID column in the CSV
+    pop_data['GEOID'] = pop_data['GEO_ID'].str[-12:]
+
+    # Create lookup dictionary
+    pop_lookup = dict(
+        zip(
+            pop_data['GEOID'],
+            pop_data['B01003_001E']
+        )
+    )
+
+    block_groups['population'] = block_groups['GEOID'].map(pop_lookup)
+    block_groups = block_groups.dropna(subset=['population'])  # Drop rows with NaN population values
+
+    return block_groups
+
+def designate_new_vtype(route_file_path = ".\\test_PA_rou.xml", new_vtype_id = "electric_vehicle", new_vtype_params = {"vClass": "passenger", "color": "1,0,0", "accel": "3.0", "decel": "6.0", "length": "5.0", "minGap": "2.5", "maxSpeed": "13.9"}):
+    # Load the existing route file
+    doc = minidom.parse(route_file_path)
+    root = doc.documentElement
+
+    # Create a new vType element
+    vtype_element = doc.createElement("vType")
+    vtype_element.setAttribute("id", new_vtype_id)
+    vtype_element.setAttribute("has.battery.device", "true")
+
+    # Set the attributes for the new vType
+    for param, value in new_vtype_params.items():
+        vtype_element.setAttribute(param, value)
+
+    # Append the new vType to the root of the XML
+    root.appendChild(vtype_element)
+
+    # Save the modified route file
+    with open(route_file_path, "w") as f:
+        doc.writexml(f, indent="  ", addindent="  ", newl="\n")
 #assign_pop_to_street()
+def assign_vehicles_new_vtype(route_file_path = ".\\test_PA_rou.xml", new_vtype_id = "electric_vehicle", percent_vehicles = .15, seed = 42, new_vtype_params = {"vClass": "passenger", "color": "1,0,0", "accel": "3.0", "decel": "6.0", "length": "5.0", "minGap": "2.5", "maxSpeed": "13.9"}):
+    designate_new_vtype(route_file_path, new_vtype_id,new_vtype_params)
+    # Load the existing route file
+    doc = minidom.parse(route_file_path)
+    root = doc.documentElement
 
+    # Get all vehicle elements
+    vehicles = root.getElementsByTagName("vehicle")
+
+    # Randomly select vehicles to change their vType
+    num_vehicles = int(len(vehicles) * percent_vehicles)
+    random.seed(seed)
+    selected_indices = random.sample(range(len(vehicles)), min(num_vehicles, len(vehicles)))
+
+    for index in selected_indices:
+        vehicle = vehicles[index]
+        vehicle.setAttribute("type", new_vtype_id)
+
+    # Save the modified route file
+    with open(route_file_path, "w") as f:
+        doc.writexml(f, indent="  ", addindent="  ")
 #junctions = get_junctions()
 #TAZ = grab_taz(sqlite3.connect("../data/UDS.db"))
 

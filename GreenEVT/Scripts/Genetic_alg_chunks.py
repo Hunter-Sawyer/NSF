@@ -337,6 +337,13 @@ def main():
         directory_creation(SDN)
     else:
         SDN2 = ""
+
+    if "netPath" in arguments:
+        netPath = arguments[arguments.index("netPath")+1]
+        print(f"Using custom network path: {netPath}")
+    else:
+        netPath = "../data/sumo_network/greensboro.net.xml"
+        print(f"Using default network path: {netPath}")
         
     if "--pop" in arguments:
         pop = int(arguments[arguments.index("--pop")+1])
