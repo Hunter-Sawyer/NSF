@@ -52,9 +52,9 @@ def run_traci_simulation(tracker_file=None, route_file="test_PA_rou.xml", net_fi
         for veh_id in departed:
             if traci.vehicle.getTypeID(veh_id) == "electric_vehicle":
                 battery_cap = float(traci.vehicle.getParameter(veh_id, "device.battery.capacity"))
-                # random_soc = random.gauss(.5 * battery_cap, 0.1 * battery_cap)
-                # initial_soc = max(0, min(battery_cap, random_soc))
-                initial_soc = 0.05 * battery_cap # Starve the battery to 5% for test
+                random_soc = random.gauss(.5 * battery_cap, 0.1 * battery_cap)
+                initial_soc = max(0, min(battery_cap, random_soc))
+                # initial_soc = 0.05 * battery_cap # Starve the battery to 5% for test
                 traci.vehicle.setParameter(veh_id, "device.battery.chargeLevel", str(initial_soc))
 
                 # 2. PROACTIVE ROUTING: Calculate optimal path on departure
