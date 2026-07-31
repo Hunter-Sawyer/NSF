@@ -2,9 +2,33 @@ import heapq
 import itertools
 import warnings
 
+# Add minimum charge level when leaving chargin station
+
+def _estimate_wait(status_entry, default_session_minutes=30.0):
+    if status_entry is None:
+        return 0.0
+    if isinstance(status_entry, (int, float)):
+        return float(status_entry)
+
+    stalls = status_entry['stalls']
+    occupied = status_entry.get('occupied', 0)
+    avg_session = status_entry.get('avg_session_minutes', default_session_minutes)
+
+    if stalls <= 0:
+        raise ValueError(f"station capacity 'stalls' must be positive, got {stalls}")
+    if occupied < stalls:
+        return 0.0
+
+    cars_ahead_of_us = occupied - stalls + 1
+    return (cars_ahead_of_us / stalls) * avg_session
 
 def plan_ev_route(origin, destination, initial_soc, stations_graph, vehicle_profile,
                    real_time_status, soc_step=10, min_destination_soc=0.0):
+
+    # NOTE: min_destination_soc defaults to 0.0 intentionally during this testing phase. 
+    # This prevents tight mathematical constraints from returning unviable routes, maximizing 
+    # the volume of actionable route plans generated to stress-test the simulation's traci execution loop.
+    
     """
     Plans a minimum-time EV route from origin to destination, choosing both which
     roads to drive and how much to charge at each station along the way, using a
@@ -50,12 +74,18 @@ def plan_ev_route(origin, destination, initial_soc, stations_graph, vehicle_prof
             hardware; the search itself doesn't assume any particular curve
             shape.
 
-        real_time_status (dict): {station_name: expected_wait_minutes}. A
-            SNAPSHOT taken at planning time, not a time-varying forecast --
-            this is intentional (see discussion), and it's why the result is
-            optimal for conditions *right now*, not necessarily conditions at
-            actual arrival time. Stations missing from this dict are assumed
-            to have zero wait.
+        real_time_status (dict): {station_name: status}. A SNAPSHOT taken at
+            planning time, not a time-varying forecast -- this is intentional
+            (see discussion), so the result is optimal for conditions *right
+            now*, not necessarily conditions at actual arrival time.
+            status is one of:
+              - a dict {'stalls': int, 'occupied': int,
+                        'avg_session_minutes': float (optional, default 30)}
+                -- wait is estimated from capacity (0 if occupied < stalls,
+                otherwise scaled by how many cars are ahead per stall).
+              - a plain number -- treated as a precomputed wait in minutes,
+                for stations without capacity data yet.
+            Stations missing from this dict are assumed to have zero wait.
 
         soc_step (int, default 10): Granularity, in percentage points, of the
             charge targets the search may choose (only multiples of soc_step
@@ -149,8 +179,7 @@ def plan_ev_route(origin, destination, initial_soc, stations_graph, vehicle_prof
         # --- ACTION 1: CHARGE (Vertical Expansion) ---
         is_station = curr_node != origin and curr_node != destination
         if is_station:
-            queue_wait = real_time_status.get(curr_node, 0.0)
-
+            queue_wait = _estimate_wait(real_time_status.get(curr_node))
             start_target = int((curr_soc // soc_step) + 1) * soc_step
             # 100 is always offered explicitly, even if soc_step doesn't evenly
             # divide 100 and so wouldn't otherwise land on it (e.g. soc_step=30

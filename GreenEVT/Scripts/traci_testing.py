@@ -3,7 +3,7 @@ import sys
 import random
 import sumolib
 import traci
-import routing # Your custom behavior model
+import routing # Behavior model
 
 if 'SUMO_HOME' in os.environ:
     sys.path.append(os.path.join(os.environ['SUMO_HOME'], 'tools'))
@@ -28,6 +28,10 @@ def run_traci_simulation(tracker_file=None, route_file="test_PA_rou.xml", net_fi
     traci.start(traci_cmd)
 
     # 1. BUILD GRAPH: Parse the target city network dynamically for the routing algorithm
+
+    # NOTE: This builds a naive graph treating every junction as a potential station to scaffold 
+    # Dijkstra and state-machine testing. For production, this must be replaced with a meta-network 
+    # using sumolib/findRoute to map true paths between strictly valid charging stations and origins/destinations.
     net = sumolib.net.readNet(net_file)
     stations_graph = {}
     for node in net.getNodes():
@@ -36,6 +40,9 @@ def run_traci_simulation(tracker_file=None, route_file="test_PA_rou.xml", net_fi
         for edge in node.getOutgoing():
             target_node = edge.getToNode().getID()
             travel_time = edge.getLength() / edge.getSpeed()
+
+            # NOTE: Using a linear proxy (time / 10.0) for energy consumption is a deliberate 
+                # simplification to keep debugging deterministic without needing a high-fidelity physical model.
             stations_graph[node_id][target_node] = {
                 'driving_time': travel_time / 60.0,
                 'soc_cost': travel_time / 10.0, 
@@ -65,6 +72,11 @@ def run_traci_simulation(tracker_file=None, route_file="test_PA_rou.xml", net_fi
                 start_node = net.getEdge(route_edges[0]).getFromNode().getID()
                 end_node = net.getEdge(route_edges[-1]).getToNode().getID()
 
+
+                # NOTE: Charge demand data (real_time_status) is intentionally bypassed here to prioritize 
+                # geographical relocation and ensure baseline stability in the new city layout. 
+                # Additionally, the universal vehicle_profile operates purely in percentage space, avoiding 
+                # unnecessary variance during core route-generation testing despite differing absolute capacities.
                 plan = routing.plan_ev_route(
                     origin=start_node,
                     destination=end_node,
@@ -128,7 +140,9 @@ def run_traci_simulation(tracker_file=None, route_file="test_PA_rou.xml", net_fi
                     info["current_target_soc"] = next_step[2]
                     info["state"] = "to_charger"
                     
-                    # Assign a valid station ID (simplified fallback for simulation)
+                    # NOTE: Random station assignment is a temporary fallback to guarantee the state machine 
+                    # triggers the `to_charger` and `charging` states. Once the meta-network governs physical nodes, 
+                    # the target_node will be the actual station ID, and this randomness must be removed.
                     station_id = random.choice(charging_stations) 
                     info["station"] = station_id
                     
