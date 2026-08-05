@@ -50,7 +50,9 @@ def run_traci_simulation(tracker_file=None, route_file="test_PA_rou.xml", net_fi
             }
 
     charging_stations = traci.chargingstation.getIDList()
-    vehicle_info = {}   
+    vehicle_info = {}
+    vehicle_home = {}       # veh_id -> home node, set once on first departure
+    vehicle_home_gain = {}  # veh_id -> (min, max) charge gain window, only if trait assigned
 
     for step in range(100000):
         traci.simulationStep()
@@ -70,6 +72,10 @@ def run_traci_simulation(tracker_file=None, route_file="test_PA_rou.xml", net_fi
                 
                 # Extract origin and destination nodes from the pre-assigned edges
                 start_node = net.getEdge(route_edges[0]).getFromNode().getID()
+                if veh_id not in vehicle_home:
+                    vehicle_home[veh_id] = start_node
+                    if random.random() < 0.3:  # trait probability -- tune #FIXME
+                        vehicle_home_gain[veh_id] = (2.0, 8.0)  # kWh window -- tune to your units #FIXME
                 end_node = net.getEdge(route_edges[-1]).getToNode().getID()
 
 
@@ -85,6 +91,18 @@ def run_traci_simulation(tracker_file=None, route_file="test_PA_rou.xml", net_fi
                     vehicle_profile=routing.my_ev,
                     real_time_status={}
                 )
+
+                plan = routing.force_last_charge_to_80(plan)
+
+                if plan is not None:
+                    plan["total_time_minutes"] = routing.recompute_total_time_from_path(
+                        plan["path"],
+                        stations_graph,
+                        routing.my_ev,
+                        real_time_status={},
+                        origin=start_node,
+                        destination=end_node
+                    )
 
                 if plan:
                     # 3. QUEUE INITIALIZATION: Store the full sequence of actions
@@ -129,7 +147,12 @@ def run_traci_simulation(tracker_file=None, route_file="test_PA_rou.xml", net_fi
 
             elif info["state"] == "executing_plan":
                 if len(info["route_plan"]) == 0:
-                    del vehicle_info[veh_id] # Trip complete
+                    if info["current_node"] == vehicle_home.get(veh_id) and veh_id in vehicle_home_gain:
+                        capacity = float(traci.vehicle.getParameter(veh_id, "device.battery.capacity"))
+                        current = float(traci.vehicle.getParameter(veh_id, "device.battery.chargeLevel"))
+                        gain = random.uniform(*vehicle_home_gain[veh_id])
+                        traci.vehicle.setParameter(veh_id, "device.battery.chargeLevel", str(min(capacity, current + gain)))
+                    del vehicle_info[veh_id]
                     continue
                 
                 next_step = info["route_plan"].pop(0)

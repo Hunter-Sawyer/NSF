@@ -237,3 +237,49 @@ def standard_ev_charge_curve(from_soc, to_soc):
 
 
 my_ev = {'charge_curve_func': standard_ev_charge_curve}
+
+def recompute_total_time_from_path(path, vehicle_profile, real_time_status):
+    charge_curve = vehicle_profile['charge_curve_func']
+    total_time = 0.0
+
+    for i in range(1, len(path)):
+        prev_node, prev_action, prev_soc = path[i - 1]
+        curr_node, curr_action, curr_soc = path[i]
+
+        if curr_action.startswith("charge_to_"):
+            # Extract target SoC from action string
+            target_soc = float(curr_action.split("_")[2].replace("%", ""))
+            total_time += _estimate_wait(real_time_status.get(curr_node))
+            total_time += charge_curve(prev_soc, target_soc)
+
+        elif curr_action == "drive_to":
+            # Need edge lookup from the graph if you want exact recomputation.
+            # This placeholder assumes drive times were already accounted for elsewhere.
+            pass
+
+    return total_time
+
+def force_last_charge_to_80(result):
+    if result is None:
+        return None
+
+    path = list(result["path"])
+
+    last_charge_idx = None
+    for i in range(len(path) - 1, -1, -1):
+        action = path[i][1]
+        if isinstance(action, str) and action.startswith("charge_to_"):
+            last_charge_idx = i
+            break
+
+    if last_charge_idx is None:
+        return result
+
+    node, action, soc = path[last_charge_idx]
+    if soc != 80:
+        wait_part = "_after waiting " if "_after waiting " in action else "_immediately"
+        path[last_charge_idx] = (node, f"charge_to_80%{wait_part}", 80)
+
+    result = dict(result)
+    result["path"] = path
+    return result
