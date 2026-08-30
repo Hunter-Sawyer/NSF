@@ -1,6 +1,6 @@
 import string
 import os,sys
-from turtle import pd
+#from turtle import pd
 if 'SUMO_HOME' in os.environ:
     sys.path.append(os.path.join(os.environ['SUMO_HOME'], 'tools'))
 
@@ -17,6 +17,7 @@ import pandas as pd
 
 from shapely.geometry import LineString
 from pyproj import CRS
+from network_filter import passenger_connectivity
 
 
 #This file creates the XML for the statistics file, including all default params, not including assigning pops to streers
@@ -48,8 +49,8 @@ def create_stat_XML(inhabitants="1000",households="500",childrenAgeLimit="19",re
     parameters = doc.createElement("parameters")
     parameters.setAttribute("carPreference","0.50")
     parameters.setAttribute("meanTimePerKmInCity","6")
-    parameters.setAttribute("freeTimeActivityRate","0.15")
-    parameters.setAttribute("uniformRandomTraffic","0.20")
+    parameters.setAttribute("freeTimeActivityRate","0.00")
+    parameters.setAttribute("uniformRandomTraffic","0.00")
     parameters.setAttribute("departureVariation","300")
 
     doc.documentElement.appendChild(parameters)
@@ -246,8 +247,9 @@ def assign_pop_to_street_without_jobs_init(
         database_path = "../data/UDS.db", 
         network_path = "../data/sumo_network/greensboro.net.xml",
         seed=98,
-        output_path = "../genetic_alg/static_files/pop_file.xml",inhabitants = 10000):
-    doc = create_stat_XML(inhabitants=str(inhabitants))
+        output_path = "../genetic_alg/static_files/pop_file.xml",inhabitants = 10000
+        ,incoming_percent = .15, outgoing_percent = .15,SDN2 = ""):
+    doc = create_stat_XML(inhabitants=str(inhabitants),households = str(inhabitants/2),outgoingTraffic=str(int(inhabitants*outgoing_percent)),incomingTraffic=str(int(inhabitants*incoming_percent)))
     print("Created statistics XML")
 
     conn = sqlite3.connect(database_path)
@@ -323,26 +325,79 @@ def assign_pop_to_street_without_jobs_init(
     with open(output_path, "w") as f:
         doc.writexml(f, indent="  ", addindent="  ", newl="\n")
 
-    with open("../genetic_alg/static_files/real_edges.txt","w") as f:
+    with open(f"../genetic_alg/{SDN2}static_files/real_edges.txt","w") as f:
         for edge_id in real_edges:
             f.write(f"{edge_id}\n")
     return 
 
-def assign_jobs(output_file_name,job_assignments,real_edges,population_file_template = "../genetic_alg/static_files/pop_file.xml"):
+def assign_jobs(output_file_name,job_assignments,real_edges,n_gates,IO_list = [200,150],population_file_template = "../genetic_alg/static_files/pop_file.xml",SDN2 = "",network_path = "../data/Palo_Alto/PA.network.net.xml"):
     doc = minidom.parse(population_file_template)
     root = doc.documentElement
+    general = doc.getElementsByTagName("general")[0]
+    general.setAttribute("incomingTraffic",f"{int(IO_list[0])}")
+    general.setAttribute("outgoingTraffic",f"{int(IO_list[1])}")
     streets_node = root.getElementsByTagName("streets")[0]
     edges = list(streets_node.getElementsByTagName("street"))
-    print(f"Found {len(edges)} edges in the population file")
+    #print(f"Found {len(edges)} edges in the population file")
 
+    edge_job_map = dict(zip(real_edges, job_assignments))
+
+    #print("Setting work Positions")
     for edge in edges:
         edge_id = edge.getAttribute("edge")
-        if edge_id in real_edges:
-            index = real_edges.index(edge_id)
-            jobs = job_assignments[index]
-            edge.setAttribute("workPosition",f"{jobs}")
-        else:
+        try:
+            edge.setAttribute("workPosition",str(edge_job_map.get(edge_id, 0)))
+        except KeyError:
             edge.setAttribute("workPosition","0")
+    network = sumolib.net.readNet(network_path)
+    connectivity = passenger_connectivity(network)
+
+    with open("../genetic_alg/static_files/gates.txt", "r") as f:
+        gates = [line.strip() for line in f.readlines() if line.strip()]
+
+    city_gates_node = doc.createElement("cityGates")
+
+    #print("Reading Gates")
+    for idx, gate_edge_id in enumerate(gates):
+        try:
+            gate_edge = network.getEdge(gate_edge_id)
+        except KeyError:
+            print(f"Skipping gate edge missing from current network: {gate_edge_id}")
+            continue
+
+        has_incoming = bool(gate_edge.getIncoming())
+        has_outgoing = bool(gate_edge.getOutgoing())
+
+        # An incoming gate has no predecessor; an outgoing gate has no
+        # successor. Do not assign traffic to edges that are not true gates.
+        if has_incoming and has_outgoing:
+            print(f"Skipping non-gate edge in gates.txt: {gate_edge_id}")
+            continue
+
+        if not has_incoming and gate_edge_id not in connectivity["from_hub"]:
+            print(f"Skipping departure gate with no directed path from network hub: {gate_edge_id}")
+            continue
+
+        if not has_outgoing and gate_edge_id not in connectivity["to_hub"]:
+            print(f"Skipping arrival gate with no directed path to network hub: {gate_edge_id}")
+            continue
+
+        # ActivityGen's incoming traffic ends at a city gate and outgoing
+        # traffic starts at one.  Therefore the XML attributes are opposite
+        # the topological test: no successor -> incoming, no predecessor ->
+        # outgoing.
+        incoming_val = n_gates[idx, 0] if not has_outgoing else 0
+        outgoing_val = n_gates[idx, 1] if not has_incoming else 0
+
+        gate_node = doc.createElement("entrance")
+        gate_node.setAttribute("edge", gate_edge_id)
+        gate_node.setAttribute("pos","0.00")
+        gate_node.setAttribute("incoming",f"{incoming_val}")
+        gate_node.setAttribute("outgoing",f"{outgoing_val}")
+
+        city_gates_node.appendChild(gate_node)
+        root.appendChild(city_gates_node)
+
     with open(output_file_name, "w") as f:
         doc.writexml(f)
     return
@@ -350,8 +405,18 @@ def assign_jobs(output_file_name,job_assignments,real_edges,population_file_temp
 def assign_pop_to_streets_with_from_census(block_groups_path = "..\\..\\tl_2019_06_bg\\tl_2019_06_bg.shp", 
 associated_pop_path = "..\\..\\tl_2019_06_bg\\block_groups_pop\\ACSDT5Y2020.B01003-Data.csv",
 network_path = "..\\data\\Palo Alto\\PA.network.net.xml",
-output_path = "../genetic_alg/static_files/pop_file.xml"):
-    doc = create_stat_XML()
+output_path = "../genetic_alg/static_files/pop_file.xml",population = 1000,SDN2 = ""):
+    if not isinstance(population, (int, float)) or population <= 0:
+        raise ValueError("population must be a positive number")
+
+    inhabitants = int(population)
+    # Keep the existing household-to-inhabitant ratio while satisfying
+    # ActivityGen's requirement that households be fewer than inhabitants.
+    households = max(1, int(round(inhabitants * 0.5)))
+    doc = create_stat_XML(
+        inhabitants=str(inhabitants),
+        households=str(households),
+    )
 
     #block_groups = gpd.read_file(block_groups_path)
     #pop_data = pd.read_csv(associated_pop_path)
@@ -361,6 +426,7 @@ output_path = "../genetic_alg/static_files/pop_file.xml"):
     print(f"CRS of block groups: {block_groups_df.crs}")
 
     net = sumolib.net.readNet(network_path)
+    print(f"Loaded SUMO network with {len(net.getEdges())} edges")
 
     # try:
     proj_string = net.getLocationOffset()
@@ -403,27 +469,51 @@ output_path = "../genetic_alg/static_files/pop_file.xml"):
     print("Building edge geometries...")
 
     edge_geometries = []
-
+    real_edges = []
+    connected_edges = passenger_connectivity(net)["round_trip"]
     for edge in net.getEdges():
         # Skip internal/junction edges
         if edge.isSpecial():
+            #print(f"Skipping special edge {edge.getID()}")
+            continue
+
+        if edge.getID() not in connected_edges:
+            #print(f"Skipping disconnected passenger edge {edge.getID()}")
+            continue
+
+        # ActivityGen creates passenger trips. Do not include service roads
+        # restricted to pedestrians, bicycles, or delivery vehicles.
+        if not edge.allows("passenger"):
+            #print(f"Skipping non-passenger edge {edge.getID()}")
+            continue
+
+        # A clipped network can leave one-way dead-end/fringe edges. They are
+        # valid network edges, but cannot reliably serve as both trip origins
+        # and destinations for ActivityGen.
+        if edge.is_fringe():
+            #print(f"Skipping fringe edge {edge.getID()}")
             continue
 
         shape = edge.getShape()
         if len(shape) < 2:
             continue
 
-        edge_geometries.append((edge.getID(),LineString(shape)))
-
+        edge_geom = LineString(shape)
+        edge_geometries.append((edge.getID(), edge_geom))
+        real_edges.append(edge.getID())
+    print(f"Found {len(real_edges)} real edges in the network")
     print(f"Loaded {len(edge_geometries)} usable edges")
+
+    street_populations = []
+    source_population = 0.0
 
     for taz in block_groups_df.itertuples():
 
-        print(
-            f"Processing TAZ {taz.GEOID} "
-            f"with population {taz.population}"
-            f" And first geometry point {taz.geometry.centroid.x}, {taz.geometry.centroid.y}"
-        )
+        # print(
+        #     f"Processing TAZ {taz.GEOID} "
+        #     f"with population {taz.population}"
+        #     f" And first geometry point {taz.geometry.centroid.x}, {taz.geometry.centroid.y}"
+        # )
 
         taz_population = taz.population
         taz_shape = taz.geometry
@@ -436,30 +526,50 @@ output_path = "../genetic_alg/static_files/pop_file.xml"):
             # Any edge touching the TAZ counts
             if edge_geom.intersects(taz_shape):
                 edges_within_taz.append(edge_id)
+                #print(f"Edge {edge_id} intersects with TAZ {taz.GEOID}")
 
-            # Option 2 (stricter):
+            #Option 2 (stricter):
             # if taz_shape.contains(edge_geom.centroid):
             #     edges_within_taz.append(edge_id)
 
         if not edges_within_taz:
             continue
 
-        print(f"Found {len(edges_within_taz)} edges within TAZ {taz.GEOID}")
+        #print(f"Found {len(edges_within_taz)} edges within TAZ {taz.GEOID}")
 
-        pop_per_edge = (
-            int(taz_population) / len(edges_within_taz)
-        )
+        pop_per_edge = float(taz_population) / len(edges_within_taz)
+        source_population += float(taz_population)
 
         for edge_id in edges_within_taz:
-            street = doc.createElement("street")
-            street.setAttribute("edge",str(edge_id))
-            street.setAttribute("population",str(pop_per_edge))
-            street.setAttribute("workPosition","1")
+            street_populations.append((edge_id, pop_per_edge))
 
-            streets_node.appendChild(street)
+    if source_population <= 0 or not street_populations:
+        raise ValueError("No census population could be assigned to network streets")
+
+    population_scale = inhabitants / source_population
+    print(
+        f"Scaling mapped census population {source_population:.0f} "
+        f"to requested population {inhabitants} (factor {population_scale:.4f})"
+    )
+
+    for edge_id, pop_per_edge in street_populations:
+        street = doc.createElement("street")
+        street.setAttribute(
+            "edge",
+            str(edge_id),
+        )
+        street.setAttribute(
+            "population",
+            str(pop_per_edge * population_scale),
+        )
+        street.setAttribute("workPosition", "1")
+        streets_node.appendChild(street)
 
     with open(output_path, "w") as f:
         doc.writexml(f,indent="  ",addindent="  ",newl="\n")
+    with open(f"../genetic_alg/{SDN2}static_files/real_edges.txt","w") as f:
+        for edge_id in real_edges:
+            f.write(f"{edge_id}\n")
 
     print("Finished writing:", output_path)
 
@@ -564,16 +674,40 @@ def designate_new_vtype(route_file_path = ".\\test_PA_rou.xml", new_vtype_id = "
     root = doc.documentElement
 
     # Create a new vType element
+    for Vehicle_type in root.getElementsByTagName("vType"):
+        if Vehicle_type.getAttribute("id") == new_vtype_id:
+            print(f"vType '{new_vtype_id}' already exists. Skipping creation.")
+            return
+
     vtype_element = doc.createElement("vType")
     vtype_element.setAttribute("id", new_vtype_id)
-    vtype_element.setAttribute("has.battery.device", "true")
+    #vtype_element.setAttribute("has.battery.device", "true")
 
     # Set the attributes for the new vType
     for param, value in new_vtype_params.items():
         vtype_element.setAttribute(param, value)
 
+    #Sumo requires weird formatting of the xml value for has.battery.device so it has to be set this way. check vtype in route files to see example
+    battery_param = doc.createElement("param")
+    battery_param.setAttribute("key", "has.battery.device")
+    battery_param.setAttribute("value", "true")
+
+    vtype_element.appendChild(battery_param)
+
     # Append the new vType to the root of the XML
-    root.appendChild(vtype_element)
+    insert_before = None
+    for child in root.childNodes:
+        if child.nodeType != child.ELEMENT_NODE:
+            continue
+
+        if child.tagName in ("vehicle", "trip", "flow", "route"):
+            insert_before = child
+            break
+
+    if insert_before is not None:
+        root.insertBefore(vtype_element, insert_before)
+    else:
+        root.appendChild(vtype_element)
 
     # Save the modified route file
     with open(route_file_path, "w") as f:

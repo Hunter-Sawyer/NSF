@@ -10,6 +10,9 @@ import math
 from pathlib import Path
 import shutil
 import gzip
+import traci_testing
+from rebuild_route_finder import rebuild_route_finder
+from Assign_gates import find_gates
 
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
@@ -66,10 +69,11 @@ def directory_creation(name):
     else:
         print("Directory exists")
 
+
 def tracker_assignment(child_index, generation_index,SDN2 = ""):
     tracker_name = f"../outputs/{child_index}_{generation_index}_traffic.xml"
     
-    doc = minidom.parse("../genetic_alg/static_files/Route_finder.xml")
+    doc = minidom.parse(f"../genetic_alg/{SDN2}static_files/Route_finder.xml")
     
     edge = doc.getElementsByTagName("edgeData")[0]
     edge.setAttribute("file",tracker_name)
@@ -80,17 +84,24 @@ def tracker_assignment(child_index, generation_index,SDN2 = ""):
 
 # default seed 99
 #90 - 
-def process_child(child_index,generation_index,IO_array, job_array, real_edges,gates,SDN2 = "",road_activity = r"./matched_edges.txt"):
+def process_child(child_index,netPath,generation_index,IO_array, job_array, real_edges,gates,SDN2 = "",road_activity = r"./matched_edges.txt"):
     #print(f"Processing Child {child_index}...")
-    activity_gen_assign_populations.assign_jobs(output_file_name=f"../genetic_alg/{SDN2}intermediate_files/stats/Child_{child_index}_{generation_index}.xml",job_assignments=job_array[child_index,:],real_edges=real_edges,n_gates=gates[child_index, :, :],IO_list = IO_array[child_index])
-    #print(f"Assigned Jobs")
-    
-    T_R_Command = f"activitygen --net-file ../data/sumo_network/greensboro.net.xml --stat-file ../genetic_alg/{SDN2}intermediate_files/stats/Child_{child_index}_{generation_index}.xml --output-file ../genetic_alg/{SDN2}intermediate_files/trips_routes/{child_index}_{generation_index}_trips.rou.xml --seed 93 > NUL 2>&1"
-    #print(f"Running command: {T_R_Command}")
-    
-    os.system(f"{T_R_Command}")
+    population_file = f"../genetic_alg/{SDN2}static_files/pop_file.xml"
+    activity_gen_assign_populations.assign_jobs(output_file_name=f"../genetic_alg/{SDN2}intermediate_files/stats/Child_{child_index}_{generation_index}.xml",population_file_template = population_file,job_assignments=job_array[child_index,:],real_edges=real_edges,n_gates=gates[child_index, :, :],IO_list = IO_array[child_index],network_path=netPath)
+    print(f"Assigned Jobs")
 
-    T_R_Z_Command = f"gzip ../genetic_alg/{SDN2}intermediate_files/stats/Child_{child_index}_{generation_index}.xml"
+    stats_file = f"../genetic_alg/{SDN2}intermediate_files/stats/Child_{child_index}_{generation_index}.xml"
+    trips_file = f"../genetic_alg/{SDN2}intermediate_files/trips_routes/{child_index}_{generation_index}_trips.rou.xml"
+    T_R_Command = [
+        "activitygen",
+        "--net-file", netPath,
+        "--stat-file", stats_file,
+        "--output-file", trips_file,
+        "--seed", "93",
+        "--duration-d", str(traci_testing.SIMULATION_DAYS),
+    ]
+    print(f"Running command: {' '.join(T_R_Command)}")
+    subprocess.run(T_R_Command, check=True)
     
     TR_path = Path(f"../genetic_alg/{SDN2}intermediate_files/stats/Child_{child_index}_{generation_index}.xml")
     
@@ -100,31 +111,51 @@ def process_child(child_index,generation_index,IO_array, job_array, real_edges,g
     
         
         
-    #print(f"ran activity_gen")
-    #print(f"Generated trips file for Child {child_index}_{generation_index}.xml")
-    R_Command = f"duarouter --net-file ../data/sumo_network/greensboro.net.xml --route-files ../genetic_alg/{SDN2}intermediate_files/trips_routes/{child_index}_{generation_index}_trips.rou.xml --output-file ../genetic_alg/{SDN2}intermediate_files/routes/{child_index}_{generation_index}_rou.xml --ignore-errors > NUL 2>&1"
-    os.system(f"{R_Command}")
+    print(f"ran activity_gen")
+    print(f"Generated trips file for Child {child_index}_{generation_index}.xml")
+    route_file = f"../genetic_alg/{SDN2}intermediate_files/routes/{child_index}_{generation_index}_rou.xml"
+    R_Command = [
+        "duarouter",
+        "--net-file", netPath,
+        "--route-files", trips_file,
+        "--output-file", route_file,
+        "--ignore-errors", "true",
+    ]
+    print(f"Running command: {' '.join(R_Command)}")
+    subprocess.run(R_Command, check=True)
+    print(f"Generated routes for Child {child_index}_{generation_index}.xml")
+    print(f"assigning vehicle type")
+
+    #activity_gen_assign_populations.designate_new_vtype(route_file_path=f"../genetic_alg/{SDN2}intermediate_files/routes/{child_index}_{generation_index}_rou.xml")
+    activity_gen_assign_populations.assign_vehicles_new_vtype(route_file_path=route_file)
     
     #print(f"Generated routes for Child {child_index}_{generation_index}.xml")
 
     tracker_assignment(child_index,generation_index,SDN2 = SDN2)
 
-    S_Command = f"sumo --net-file ../data/sumo_network/greensboro.net.xml --route-files ../genetic_alg/{SDN2}intermediate_files/routes/{child_index}_{generation_index}_rou.xml --additional-files ../genetic_alg/{SDN2}intermediate_files/trackers/{child_index}_{generation_index}_tracker.xml > NUL 2>&1"
-    os.system(f"{S_Command}")
+    #S_Command = f"sumo --net-file {netPath} --route-files ../genetic_alg/{SDN2}intermediate_files/routes/{child_index}_{generation_index}_rou.xml --additional-files ../genetic_alg/{SDN2}intermediate_files/trackers/{child_index}_{generation_index}_tracker.xml > NUL 2>&1"
+    #os.system(f"{S_Command}")
+
+    traci_testing.run_traci_simulation(tracker_file=f"../genetic_alg/{SDN2}intermediate_files/trackers/{child_index}_{generation_index}_tracker.xml",route_file=route_file,net_file=netPath)
     
     if TR_path.exists() and not TR_Z_path.exists():
     
-        os.system(f"{T_R_Z_Command}")
+        gzip_file_safely(str(TR_path), remove_original=True, overwrite=True)
     
     
-    T_R_R_Command = (f"rm ../genetic_alg/{SDN2}intermediate_files/stats/Child_{child_index}_{generation_index}.xml")
     if TR_path.exists():
-        os.system(f"{T_R_R_Command}")
+        TR_path.unlink()
     
     #> NUL 2>&1
     #print(f"SUMO simulation completed for Child {child_index}_{generation_index}.xml")
     output_file = f"../genetic_alg/{SDN2}intermediate_files/outputs/{child_index}_{generation_index}_traffic.xml"
     none,none,correlations = correlation_test.test_correlation(road_activity=road_activity,output_path=output_file)
+
+    if not np.isfinite(correlations):
+        raise RuntimeError(
+            f"Correlation was not finite for child {child_index}, generation "
+            f"{generation_index}. SUMO likely produced no valid detector output."
+        )
     
     gzip_file_safely(output_file, remove_original=True, overwrite=True)
     #print(f"Correlation for Child {child_index}_{generation_index}.xml: {correlations}")
@@ -328,7 +359,11 @@ def main():
     Re_calc_pop_var = False
     arguments = sys.argv[1:]
     if "--recalc" in arguments:
-        Re_calc_pop_var = true
+        Re_calc_pop_var = True
+
+    no_io_traffic = "--no-io" in arguments
+    if no_io_traffic:
+        print("Incoming/outgoing ActivityGen traffic disabled")
     
     if "--dir" in arguments:
         SDN = arguments[arguments.index("--dir")+1]
@@ -338,8 +373,8 @@ def main():
     else:
         SDN2 = ""
 
-    if "netPath" in arguments:
-        netPath = arguments[arguments.index("netPath")+1]
+    if "--netPath" in arguments:
+        netPath = arguments[arguments.index("--netPath")+1]
         print(f"Using custom network path: {netPath}")
     else:
         netPath = "../data/sumo_network/greensboro.net.xml"
@@ -351,7 +386,6 @@ def main():
         print(f"pop = {pop}")
     else:
         pop = 1000
-        Re_calc_pop_var = False
         print(f"pop = {pop}")
         
     if "--crossover" in arguments:
@@ -399,6 +433,26 @@ def main():
         current_gen = 0
         print(f"start gen = {current_gen}")
 
+    # Keep the detector definition synchronized with the selected network.
+    matched_edges_file = alt_file if train_set else "./matched_edges.txt"
+    route_finder_file = f"../genetic_alg/{SDN2}static_files/Route_finder.xml"
+    detector_edges = rebuild_route_finder(
+        network_file=netPath,
+        matched_edges_file=matched_edges_file,
+        output_file=route_finder_file,
+    )
+    print(f"Rebuilt {route_finder_file} with {len(detector_edges)} valid detector edges.")
+
+    # Rebuild gates from the same network so ActivityGen cannot generate
+    # traffic between disconnected map fragments.
+    gate_file = "../genetic_alg/static_files/gates.txt"
+    current_gates = find_gates(netPath)
+    with open(gate_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(current_gates))
+        if current_gates:
+            f.write("\n")
+    print(f"Rebuilt {gate_file} with {len(current_gates)} connected passenger gates.")
+
     #print(f"../genetic_alg/{SDN2}static_files/pop_file.xml")
         
 
@@ -407,22 +461,31 @@ def main():
     np.random.seed(38)
     random.seed(38)
     
-    if not os.path.exists(f"../genetic_alg/{SDN2}static_files/pop_file.xml") or not os.path.exists("../genetic_alg/static_files/real_edges.txt")or Re_calc_pop_var:
+    if not os.path.exists(f"../genetic_alg/{SDN2}static_files/pop_file.xml") or not os.path.exists(f"../genetic_alg/{SDN2}static_files/real_edges.txt") or Re_calc_pop_var:
         print("Generating population file...")
-        activity_gen_assign_populations.assign_pop_to_street_without_jobs_init(output_path = f"../genetic_alg/{SDN2}static_files/pop_file.xml",inhabitants=pop)
+        # print(f"../genetic_alg/{SDN2}static_files/pop_file.xml")
+        # print(os.path.exists(f"../genetic_alg/{SDN2}static_files/pop_file.xml"))
+        # print(f"../genetic_alg/{SDN2}static_files/real_edges.txt")
+        # print(os.path.exists(f"../genetic_alg/{SDN2}static_files/real_edges.txt"))
+        # print(f"Re_calc_pop_var = {Re_calc_pop_var}")
+        # exit()
+        activity_gen_assign_populations.assign_pop_to_streets_with_from_census(output_path = f"../genetic_alg/{SDN2}static_files/pop_file.xml",network_path = netPath,population = pop,SDN2 = SDN2)
     else:
         print("Population file already exists. Skipping generation.")
     #if Re_calc_pop_var:
         
         
     real_edges = []
-    with open("../genetic_alg/static_files/real_edges.txt","r") as f:
+    with open(f"../genetic_alg/{SDN2}static_files/real_edges.txt","r") as f:
         real_edges = f.read().splitlines()
         print(f"Found {len(real_edges)} real edges.")
         print(real_edges[:5])
 
-    n_gates = np.random.randint(0,10,size=(num_children,66,2))
-    IO_list = [pop*.15,pop*.15]
+    with open("../genetic_alg/static_files/gates.txt", "r") as f:
+        gate_count = sum(1 for line in f if line.strip())
+    n_gates = np.random.randint(0, 10, size=(num_children, gate_count, 2))
+    print(f"Using {gate_count} gate entries from gates.txt")
+    IO_list = [0, 0] if no_io_traffic else [pop*.15, pop*.15]
     IO_array = np.tile(IO_list,(num_children,1))
 
     print("Computing initial Job states")
@@ -487,9 +550,9 @@ def main():
         # fitness_Scores=Fitness_scores,
         # job_MR = 1.0,io_MR= 1.0,gate_MR = 1.0)
         if not train_set:
-            worker = partial(process_child, generation_index=generation,IO_array = IO_array, job_array=job_array, real_edges=real_edges,gates = n_gates,SDN2 = SDN2,road_activity = r"./matched_edges.txt")
+            worker = partial(process_child, generation_index=generation,netPath = netPath,IO_array = IO_array, job_array=job_array, real_edges=real_edges,gates = n_gates,SDN2 = SDN2,road_activity = r"./matched_edges.txt")
         else:
-            worker = partial(process_child, generation_index=generation,IO_array = IO_array, job_array=job_array, real_edges=real_edges,gates = n_gates,SDN2 = SDN2,road_activity = alt_file)
+            worker = partial(process_child, generation_index=generation,netPath = netPath,IO_array = IO_array, job_array=job_array, real_edges=real_edges,gates = n_gates,SDN2 = SDN2,road_activity = alt_file)
             
         max_retries = 3
         retry_count = 0
@@ -499,22 +562,32 @@ def main():
         #    results = list(executor.map(worker, range(num_children)))
                     
         while retry_count < max_retries:
-            try:
-                print(f" retry status ({retry_count}/{max_retries})")
-                with ProcessPoolExecutor(max_workers=33) as executor:
-                    results = list(executor.map(worker, range(num_children)))
-                    break
-            except FileNotFoundError as e:
-                print(f"[WARNING] Missing SUMO file. Retrying generation... ({retry_count+1}/{max_retries})")
-                print(e)
-                retry_count += 1
-            except Exception as e:
-                print(f"Other error: {type(e).__name__}: {e}")
+            # try:
+            #     print(f" retry status ({retry_count}/{max_retries})")
+            #     with ProcessPoolExecutor(max_workers=33) as executor:
+            #         results = list(executor.map(worker, range(num_children)))
+            #         break
+            # except FileNotFoundError as e:
+            #     print(f"[WARNING] Missing SUMO file. Retrying generation... ({retry_count+1}/{max_retries})")
+            #     print(e)
+            #     retry_count += 1
+            # except Exception as e:
+            #     print(f"Other error: {type(e).__name__}: {e}")
+            print(f" retry status ({retry_count}/{max_retries})")
+            with ProcessPoolExecutor(max_workers=33) as executor:
+                results = list(executor.map(worker, range(num_children)))
+                break
                 
         if results is None:
             raise RuntimeError("Generation failed after max retries. Aborting.")
         
         Fitness_scores = np.array(results)
+
+        if not np.isfinite(Fitness_scores).any():
+            raise RuntimeError(
+                f"Generation {generation} produced no finite fitness scores. "
+                "Check the SUMO/duarouter error above."
+            )
         
         
         if previous_best_index is not None:

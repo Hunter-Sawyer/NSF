@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2026-08-11T21:19:22.833957-06:00 by Eclipse SUMO sumo 1.25.0
+<sumoConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
+
+    <input>
+        <net-file value="..\data\Palo_Alto\PA.network.net.xml"/>
+        <route-files value="..\genetic_alg\PA_test\intermediate_files\routes\0_2_rou.xml"/>
+        <additional-files value="chargers_additional.xml,..\genetic_alg\PA_test\intermediate_files\trackers\0_2_tracker.xml"/>
+    </input>
+
+    <output>
+        <chargingstations-output value="charging_stations_output_test.xml"/>
+    </output>
+
+    <time>
+        <begin value="0"/>
+        <end value="10"/>
+    </time>
+
+    <processing>
+        <time-to-teleport value="-1"/>
+    </processing>
+
+    <report>
+        <duration-log.statistics value="true"/>
+    </report>
+
+</sumoConfiguration>
+-->
+
+<chargingstations-export>
+    <chargingStation id="0" totalEnergyCharged="0.00" chargingSteps="0"/>
+    <chargingStation id="1" totalEnergyCharged="0.00" chargingSteps="0"/>
+    <chargingStation id="2" totalEnergyCharged="0.00" chargingSteps="0"/>
+    <chargingStation id="3" totalEnergyCharged="0.00" chargingSteps="0"/>
+    <chargingStation id="4" totalEnergyCharged="0.00" chargingSteps="0"/>
+</chargingstations-export>
