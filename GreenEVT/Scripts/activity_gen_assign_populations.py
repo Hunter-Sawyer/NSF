@@ -12,12 +12,17 @@ from xml.dom import minidom
 import os
 from tqdm import tqdm
 import random
+from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 
 from shapely.geometry import LineString
 from pyproj import CRS
 from network_filter import passenger_connectivity
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = SCRIPT_DIR.parent
+REPOSITORY_DIR = PROJECT_DIR.parent
 
 
 #This file creates the XML for the statistics file, including all default params, not including assigning pops to streers
@@ -402,10 +407,35 @@ def assign_jobs(output_file_name,job_assignments,real_edges,n_gates,IO_list = [2
         doc.writexml(f)
     return
     
-def assign_pop_to_streets_with_from_census(block_groups_path = "..\\..\\tl_2019_06_bg\\tl_2019_06_bg.shp", 
-associated_pop_path = "..\\..\\tl_2019_06_bg\\block_groups_pop\\ACSDT5Y2020.B01003-Data.csv",
-network_path = "..\\data\\Palo Alto\\PA.network.net.xml",
-output_path = "../genetic_alg/static_files/pop_file.xml",population = 1000,SDN2 = ""):
+def assign_pop_to_streets_with_from_census(
+    block_groups_path=None,
+    associated_pop_path=None,
+    network_path=None,
+    output_path=None,
+    population=1000,
+    SDN2="",
+):
+    """Create an ActivityGen population file from census block groups.
+
+    Omitted paths follow the repository layout. Explicit relative paths stay
+    relative to the process working directory on both Windows and Linux.
+    """
+    block_groups_path = Path(block_groups_path or (
+        REPOSITORY_DIR / "tl_2019_06_bg" / "tl_2019_06_bg.shp"
+    )).expanduser()
+    associated_pop_path = Path(associated_pop_path or (
+        REPOSITORY_DIR
+        / "tl_2019_06_bg"
+        / "block_groups_pop"
+        / "ACSDT5Y2020.B01003-Data.csv"
+    )).expanduser()
+    network_path = Path(network_path or (
+        PROJECT_DIR / "data" / "Palo Alto" / "PA.network.net.xml"
+    )).expanduser()
+    output_path = Path(output_path or (
+        PROJECT_DIR / "genetic_alg" / f"{SDN2}static_files" / "pop_file.xml"
+    )).expanduser()
+
     if not isinstance(population, (int, float)) or population <= 0:
         raise ValueError("population must be a positive number")
 
@@ -421,11 +451,14 @@ output_path = "../genetic_alg/static_files/pop_file.xml",population = 1000,SDN2 
     #block_groups = gpd.read_file(block_groups_path)
     #pop_data = pd.read_csv(associated_pop_path)
 
-    block_groups_df = create_pop_lookup(block_groups_path, associated_pop_path)
+    block_groups_df = create_pop_lookup(
+        str(block_groups_path),
+        str(associated_pop_path),
+    )
     print(f"Loaded {len(block_groups_df)} block groups with population data")
     print(f"CRS of block groups: {block_groups_df.crs}")
 
-    net = sumolib.net.readNet(network_path)
+    net = sumolib.net.readNet(str(network_path))
     print(f"Loaded SUMO network with {len(net.getEdges())} edges")
 
     # try:
@@ -565,9 +598,10 @@ output_path = "../genetic_alg/static_files/pop_file.xml",population = 1000,SDN2 
         street.setAttribute("workPosition", "1")
         streets_node.appendChild(street)
 
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as f:
         doc.writexml(f,indent="  ",addindent="  ",newl="\n")
-    with open(f"../genetic_alg/{SDN2}static_files/real_edges.txt","w") as f:
+    with open(output_path.parent / "real_edges.txt", "w") as f:
         for edge_id in real_edges:
             f.write(f"{edge_id}\n")
 
