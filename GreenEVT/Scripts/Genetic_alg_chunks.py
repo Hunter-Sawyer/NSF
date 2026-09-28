@@ -122,6 +122,15 @@ def process_child(child_index,netPath,generation_index,IO_array, job_array, real
         "--ignore-errors", "true",
     ]
     print(f"Running command: {' '.join(R_Command)}")
+    # try:
+    #     # Add capture_output and text=True to see the message
+    #     result = subprocess.run(R_Command, check=True, capture_output=True, text=True)
+    # except subprocess.CalledProcessError as e:
+    #     print(f"--- DUAROUTER FAILED FOR CHILD ---")
+    #     print(f"STDOUT:\n{e.stdout}")
+    #     print(f"STDERR:\n{e.stderr}")
+    #     print(f"----------------------------------")
+    #     raise e
     subprocess.run(R_Command, check=True)
     print(f"Generated routes for Child {child_index}_{generation_index}.xml")
     print(f"assigning vehicle type")
@@ -129,13 +138,14 @@ def process_child(child_index,netPath,generation_index,IO_array, job_array, real
     #activity_gen_assign_populations.designate_new_vtype(route_file_path=f"../genetic_alg/{SDN2}intermediate_files/routes/{child_index}_{generation_index}_rou.xml")
     activity_gen_assign_populations.assign_vehicles_new_vtype(route_file_path=route_file)
     
-    #print(f"Generated routes for Child {child_index}_{generation_index}.xml")
+    print(f"Generated routes for Child {child_index}_{generation_index}.xml")
 
     tracker_assignment(child_index,generation_index,SDN2 = SDN2)
 
     #S_Command = f"sumo --net-file {netPath} --route-files ../genetic_alg/{SDN2}intermediate_files/routes/{child_index}_{generation_index}_rou.xml --additional-files ../genetic_alg/{SDN2}intermediate_files/trackers/{child_index}_{generation_index}_tracker.xml > NUL 2>&1"
     #os.system(f"{S_Command}")
-
+    
+    print(f"Running Sim Through Traci")
     traci_testing.run_traci_simulation(tracker_file=f"../genetic_alg/{SDN2}intermediate_files/trackers/{child_index}_{generation_index}_tracker.xml",route_file=route_file,net_file=netPath)
     
     if TR_path.exists() and not TR_Z_path.exists():

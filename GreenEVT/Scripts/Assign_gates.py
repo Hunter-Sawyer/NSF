@@ -28,9 +28,9 @@ def find_gates(network_path = "../data/sumo_network/greensboro.net.xml"):
         # ActivityGen uses an edge with no predecessor as a departure gate and
         # an edge with no successor as an arrival gate.  Check those directed
         # paths explicitly; weak connectivity is insufficient here.
-        if not incoming and outgoing and edge.getID() in connectivity["from_hub"]:
+        if not incoming and outgoing and edge.getID() in connectivity["to_hub"]:
             gate_edges.append(edge.getID())
-        elif incoming and not outgoing and edge.getID() in connectivity["to_hub"]:
+        elif incoming and not outgoing and edge.getID() in connectivity["from_hub"]:
             gate_edges.append(edge.getID())
     return gate_edges
             
