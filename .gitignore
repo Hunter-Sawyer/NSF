@@ -18,3 +18,5 @@ GreenEVT/data/ActivityGenTAZ/activitygenTAZ.rou.xml
 *rou.xml
 *rou.alt.xml
 GreenEVT/genetic_alg/intermediate_files/logs/*
+*.zip
+GreenEVT/Scripts/charging_stations_output.xml

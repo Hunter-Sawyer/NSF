@@ -71,10 +71,12 @@ def _is_home_return(vehicle_id, route, home_edges, home_return_trip_numbers):
 
 def _route_stage(from_edge, to_edge):
     try:
+        # stage = traci.simulation.findRoute(from_edge, to_edge)
         stage = traci.simulation.findRoute(from_edge, to_edge, vType="electric_vehicle",
                                            depart=-1,
                                            routingMode=0)
-    except traci.exceptions.TraCIException:
+    except traci.exceptions.TraCIException as e:
+        print(f"traci exception {e}")
         return None
 
     return stage if stage.edges else None
@@ -331,11 +333,20 @@ def _dispatch_vehicle(
         "state": "to_charger",
     })
 
+    print(f"before change target : {vehicle_id} , {choice['edge']}")
+
     traci.vehicle.changeTarget(vehicle_id, choice["edge"])
+    print(f"after change target : {vehicle_id} , {choice['edge']}")
+    temp_r = traci.vehicle.getRoute(vehicle_id)
+    print(f"vechicle route : {temp_r}")
+    print(f"station edge : {choice['edge']}")
+    print(f"choice station: {choice['station']}")
+    print(f"choice station in temp r {choice['edge'] in temp_r}")
+
     traci.vehicle.setChargingStationStop(
         vehicle_id,
         choice["station"],
-        duration=100000,
+        duration=100000.0,
     )
 
     print(
@@ -384,6 +395,7 @@ def run_traci_simulation(
     additional_files = [SCRIPT_DIR / "chargers_additional.xml"]
     if tracker_file is not None:
         additional_files.append(_resolve_path(tracker_file))
+    sumo_log = "./logging.log"
 
     traci_cmd = [
         "sumo",
@@ -392,7 +404,8 @@ def run_traci_simulation(
         "--additional-files", ",".join(str(path) for path in additional_files),
         "--time-to-teleport", "300",
         "--end", str(simulation_days * 24 * 60 * 60),
-        "--no-warnings", "true",
+        # "--no-warnings", "true",
+        "--log", str(sumo_log),
     ]
 
     traci.start(traci_cmd)
@@ -419,7 +432,17 @@ def run_traci_simulation(
                     continue
 
             _remember_battery_levels(battery_state)
+            print(
+                "before main step",
+                traci.simulation.getTime(),
+                flush=True,
+            )
             traci.simulationStep()
+            print(
+                "after main step",
+                traci.simulation.getTime(),
+                flush=True,
+            )
             current_time = traci.simulation.getTime()
 
             vehicles_at_stations = {}
@@ -542,7 +565,27 @@ def run_traci_simulation(
                             "device.battery.chargeLevel",
                         )
                     )
+                    print(
+                        "charging",
+                        vehicle_id,
+                        "station=", info["station"],
+                        "charge=", charge,
+                        "target=", info["target_charge"],
+                        "station vehicles=",
+                        traci.chargingstation.getVehicleIDs(info["station"]),
+                        "time=", traci.simulation.getTime(),
+                        flush=True,
+                    )
                     if charge >= info["target_charge"]:
+                        print(
+                            "resuming",
+                            vehicle_id,
+                            "station=", info["station"],
+                            "destination=", info["destination"],
+                            "charge=", charge,
+                            "target=", info["target_charge"],
+                            flush=True,
+                        )
                         traci.vehicle.resume(vehicle_id)
                         traci.vehicle.changeTarget(
                             vehicle_id,
