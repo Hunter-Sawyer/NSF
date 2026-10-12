@@ -1,3 +1,4 @@
+import csv
 import os
 import random
 import sys
@@ -13,7 +14,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 
 HOME_CHARGE_POWER_W = 7200.0
 HOME_CHARGE_EFFICIENCY = 0.95
-SIMULATION_DAYS = 1
+SIMULATION_DAYS = 2
 
 
 def _resolve_path(path):
@@ -70,12 +71,10 @@ def _is_home_return(vehicle_id, route, home_edges, home_return_trip_numbers):
 
 def _route_stage(from_edge, to_edge):
     try:
-        #stage = traci.simulation.findRoute(from_edge, to_edge)
         stage = traci.simulation.findRoute(from_edge, to_edge, vType="electric_vehicle",
                                            depart=-1,
                                            routingMode=0)
-    except traci.exceptions.TraCIException as e:
-        print(f"traci exception {e}")
+    except traci.exceptions.TraCIException:
         return None
 
     return stage if stage.edges else None
@@ -218,28 +217,47 @@ def _initialize_battery(
         charge = random.gauss(0.5 * capacity, 0.1 * capacity)
 
     home_arrival = home_state.pop(key, None)
+    home_energy_added = 0.0
     if home_arrival is not None:
         dwell_seconds = max(0.0, current_time - home_arrival["arrival_time"])
-        energy_added = (
+        requested_energy = (
             home_charge_power_w
             * dwell_seconds
             / 3600.0
             * home_charge_efficiency
         )
-        charge = home_arrival["charge"] + energy_added
+        charge = home_arrival["charge"] + requested_energy
         print(
-            f"{vehicle_id}: home charged {energy_added:.1f} Wh "
+            f"{vehicle_id}: home charged {requested_energy:.1f} Wh "
             f"after {dwell_seconds / 3600.0:.2f} h"
         )
 
     charge = max(0.0, min(capacity, charge))
+    if home_arrival is not None:
+        home_energy_added = max(0.0, charge - home_arrival["charge"])
     traci.vehicle.setParameter(
         vehicle_id,
         "device.battery.chargeLevel",
         str(charge),
     )
     battery_state[key] = charge
-    return capacity, charge
+    return capacity, charge, home_energy_added
+
+
+def _write_charging_totals(output_file, station_energy_wh, home_energy_wh):
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    total_energy_wh = sum(station_energy_wh.values()) + home_energy_wh
+    with output_file.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(("charging_source", "station_id",
+                        "energy_wh", "energy_kwh"))
+        for station_id, energy_wh in sorted(station_energy_wh.items()):
+            writer.writerow(
+                ("station", station_id, f"{energy_wh:.2f}", f"{energy_wh / 1000:.5f}"))
+        writer.writerow(
+            ("home", "", f"{home_energy_wh:.2f}", f"{home_energy_wh / 1000:.5f}"))
+        writer.writerow(
+            ("total", "", f"{total_energy_wh:.2f}", f"{total_energy_wh / 1000:.5f}"))
 
 
 def _dispatch_vehicle(
@@ -247,6 +265,7 @@ def _dispatch_vehicle(
     vehicle_info,
     battery_state,
     home_state,
+    home_charging_total,
     current_time,
     home_edges,
     home_return_trip_numbers,
@@ -268,7 +287,7 @@ def _dispatch_vehicle(
     household = activitygen_vehicle_key(vehicle_id)
     _remember_home_edge(vehicle_id, route, home_edges)
 
-    capacity, charge = _initialize_battery(
+    capacity, charge, home_energy_added = _initialize_battery(
         vehicle_id,
         battery_state,
         home_state,
@@ -276,6 +295,7 @@ def _dispatch_vehicle(
         home_charge_power_w,
         home_charge_efficiency,
     )
+    home_charging_total["energy_wh"] += home_energy_added
     destination_edge = route[-1]
     choice = choose_least_impact_charger(
         vehicle_id,
@@ -311,20 +331,11 @@ def _dispatch_vehicle(
         "state": "to_charger",
     })
 
-    print(f"before change target : {vehicle_id} , {choice['edge']}")
-    
     traci.vehicle.changeTarget(vehicle_id, choice["edge"])
-    print(f"after change target : {vehicle_id} , {choice['edge']}")
-    temp_r = traci.vehicle.getRoute(vehicle_id)
-    print(f"vechicle route : {temp_r}")
-    print(f"station edge : {choice['edge']}")
-    print(f"choice station: {choice['station']}")
-    print(f"choice station in temp r {choice['edge'] in temp_r}")
-    
     traci.vehicle.setChargingStationStop(
         vehicle_id,
         choice["station"],
-        duration=100000.0,
+        duration=100000,
     )
 
     print(
@@ -345,6 +356,7 @@ def run_traci_simulation(
     home_charge_power_w=HOME_CHARGE_POWER_W,
     home_charge_efficiency=HOME_CHARGE_EFFICIENCY,
     simulation_days=SIMULATION_DAYS,
+    charging_totals_file=None,
 ):
     """Run ActivityGen trips and make charging decisions through TraCI.
 
@@ -358,26 +370,35 @@ def run_traci_simulation(
 
     route_file = _resolve_path(route_file)
     net_file = _resolve_path(net_file)
+    if charging_totals_file is None:
+        report_directory = (
+            route_file.parent.parent / "outputs"
+            if route_file.parent.name == "routes"
+            else route_file.parent
+        )
+        charging_totals_file = report_directory / (
+            f"{route_file.stem}_charging_totals.csv"
+        )
+    else:
+        charging_totals_file = _resolve_path(charging_totals_file)
     additional_files = [SCRIPT_DIR / "chargers_additional.xml"]
     if tracker_file is not None:
         additional_files.append(_resolve_path(tracker_file))
-    sumo_log = "./logging.log"
 
     traci_cmd = [
         "sumo",
         "--net-file", str(net_file),
         "--route-files", str(route_file),
         "--additional-files", ",".join(str(path) for path in additional_files),
-        #"--chargingstations-output", str(SCRIPT_DIR / "charging_stations_output.xml"),
         "--time-to-teleport", "300",
         "--end", str(simulation_days * 24 * 60 * 60),
-        #"--no-warnings", "true",
-        "--log", str(sumo_log),
+        "--no-warnings", "true",
     ]
 
     traci.start(traci_cmd)
     charging_stations = traci.chargingstation.getIDList()
-    #charging_stations = ["1"]
+    station_energy_wh = {station_id: 0.0 for station_id in charging_stations}
+    home_charging_total = {"energy_wh": 0.0}
     vehicle_info = {}
     battery_state = {}
     home_state = {}
@@ -385,19 +406,48 @@ def run_traci_simulation(
 
     try:
         while traci.simulation.getMinExpectedNumber() > 0:
+            previous_vehicle_charge = {}
+            for vehicle_id in vehicle_info:
+                try:
+                    previous_vehicle_charge[vehicle_id] = float(
+                        traci.vehicle.getParameter(
+                            vehicle_id,
+                            "device.battery.chargeLevel",
+                        )
+                    )
+                except traci.exceptions.TraCIException:
+                    continue
+
             _remember_battery_levels(battery_state)
-            print(
-                "before main step",
-                traci.simulation.getTime(),
-                flush=True,
-            )
             traci.simulationStep()
-            print(
-                "after main step",
-                traci.simulation.getTime(),
-                flush=True,
-            )
             current_time = traci.simulation.getTime()
+
+            vehicles_at_stations = {}
+            for station_id in charging_stations:
+                for vehicle_id in traci.chargingstation.getVehicleIDs(station_id):
+                    vehicles_at_stations[vehicle_id] = station_id
+
+            for vehicle_id, info in vehicle_info.items():
+                station_id = vehicles_at_stations.get(vehicle_id)
+                if info["state"] != "charging" and station_id is None:
+                    continue
+                previous_charge = previous_vehicle_charge.get(vehicle_id)
+                if previous_charge is None:
+                    continue
+                try:
+                    current_charge = float(
+                        traci.vehicle.getParameter(
+                            vehicle_id,
+                            "device.battery.chargeLevel",
+                        )
+                    )
+                except traci.exceptions.TraCIException:
+                    continue
+                energy_added = max(0.0, current_charge - previous_charge)
+                if station_id is None:
+                    station_id = info.get("station")
+                if station_id in station_energy_wh:
+                    station_energy_wh[station_id] += energy_added
 
             departed = set(traci.simulation.getDepartedIDList())
             arrived = set(traci.simulation.getArrivedIDList())
@@ -435,6 +485,7 @@ def run_traci_simulation(
                     vehicle_info,
                     battery_state,
                     home_state,
+                    home_charging_total,
                     current_time,
                     home_edges,
                     home_return_trip_numbers,
@@ -459,6 +510,7 @@ def run_traci_simulation(
                     vehicle_info,
                     battery_state,
                     home_state,
+                    home_charging_total,
                     current_time,
                     home_edges,
                     home_return_trip_numbers,
@@ -490,27 +542,7 @@ def run_traci_simulation(
                             "device.battery.chargeLevel",
                         )
                     )
-                    print(
-                        "charging",
-                        vehicle_id,
-                        "station=", info["station"],
-                        "charge=", charge,
-                        "target=", info["target_charge"],
-                        "station vehicles=",
-                        traci.chargingstation.getVehicleIDs(info["station"]),
-                        "time=", traci.simulation.getTime(),
-                        flush=True,
-                    )
                     if charge >= info["target_charge"]:
-                        print(
-                            "resuming",
-                            vehicle_id,
-                            "station=", info["station"],
-                            "destination=", info["destination"],
-                            "charge=", charge,
-                            "target=", info["target_charge"],
-                            flush=True,
-                        )
                         traci.vehicle.resume(vehicle_id)
                         traci.vehicle.changeTarget(
                             vehicle_id,
@@ -521,7 +553,15 @@ def run_traci_simulation(
 
             _remember_battery_levels(battery_state)
     finally:
-        traci.close()
+        try:
+            traci.close()
+        finally:
+            _write_charging_totals(
+                charging_totals_file,
+                station_energy_wh,
+                home_charging_total["energy_wh"],
+            )
+            print(f"Charging totals saved to {charging_totals_file}")
 
 
 if __name__ == "__main__":

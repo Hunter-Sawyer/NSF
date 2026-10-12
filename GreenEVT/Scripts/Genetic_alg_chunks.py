@@ -146,7 +146,15 @@ def process_child(child_index,netPath,generation_index,IO_array, job_array, real
     #os.system(f"{S_Command}")
     
     print(f"Running Sim Through Traci")
-    traci_testing.run_traci_simulation(tracker_file=f"../genetic_alg/{SDN2}intermediate_files/trackers/{child_index}_{generation_index}_tracker.xml",route_file=route_file,net_file=netPath)
+    traci_testing.run_traci_simulation(
+        tracker_file=f"../genetic_alg/{SDN2}intermediate_files/trackers/{child_index}_{generation_index}_tracker.xml",
+        route_file=route_file,
+        net_file=netPath,
+        charging_totals_file=(
+            f"../genetic_alg/{SDN2}intermediate_files/outputs/"
+            f"{child_index}_{generation_index}_charging_totals.csv"
+        ),
+    )
     
     if TR_path.exists() and not TR_Z_path.exists():
     
