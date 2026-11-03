@@ -1,0 +1,4 @@
+<additional>
+    <chargingStation id="cs_west" lane="B2C2_0" startPos="20" endPos="35" friendlyPos="true" power="50000"/>
+    <chargingStation id="cs_east" lane="C2D2_0" startPos="20" endPos="35" friendlyPos="true" power="50000"/>
+</additional>

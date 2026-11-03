@@ -96,7 +96,7 @@ def _distance_from_vehicle(edge_id, position, destination_edge, fallback):
         return fallback
 
 
-def choose_least_impact_charger(
+def charger_candidates(
     vehicle_id,
     destination_edge,
     current_charge,
@@ -105,13 +105,17 @@ def choose_least_impact_charger(
     reserve_soc=0.10,
     estimated_consumption_wh_per_meter=0.20,
     charge_target_soc=0.90,
+    skip_if_sufficient=False,
 ):
-    """Choose a charger by added travel time, then added route distance.
+    """Measure the direct leg and every reachable charger for this vehicle.
 
-    The decision is also made here: ``None`` means the vehicle has enough
-    estimated energy to reach its destination with the requested reserve.
-    ``estimated_consumption_wh_per_meter`` should be calibrated to the SUMO
-    battery model used by the route file.
+    Returns ``None`` if there is no route to the destination, otherwise a dict
+    with the direct route (``baseline_*``), the energy it needs including the
+    reserve (``required_energy``), and one candidate per charger the vehicle
+    can reach with its reserve intact. Charge decision policies (see
+    ``charge_policies.py``) choose among the same candidates. With
+    ``skip_if_sufficient``, chargers aren't routed when the vehicle already
+    has ``required_energy``.
     """
     current_edge = traci.vehicle.getRoadID(vehicle_id)
     current_position = traci.vehicle.getLanePosition(vehicle_id)
@@ -130,11 +134,9 @@ def choose_least_impact_charger(
         baseline_distance * estimated_consumption_wh_per_meter + reserve_energy
     )
 
-    if current_charge >= required_energy:
-        return None
-
-    best = None
-    for station_id in charging_stations:
+    candidates = []
+    for station_id in ([] if skip_if_sufficient and current_charge >= required_energy
+                       else charging_stations):
         station_lane = traci.chargingstation.getLaneID(station_id)
         station_edge = traci.lane.getEdgeID(station_lane)
 
@@ -167,20 +169,80 @@ def choose_least_impact_charger(
         )
         target_charge = min(battery_capacity, target_charge)
 
-        candidate = {
+        candidates.append({
             "station": station_id,
             "edge": station_edge,
             "added_time": added_time,
             "added_distance": added_distance,
             "target_charge": target_charge,
-        }
-        score = (added_time, added_distance, candidate_time, station_id)
+            "candidate_time": candidate_time,
+            "energy_to_station": distance_to_station * estimated_consumption_wh_per_meter,
+            "energy_from_station": from_station.length * estimated_consumption_wh_per_meter,
+        })
 
+    return {
+        "baseline_time": baseline.travelTime,
+        "baseline_distance": baseline_distance,
+        "baseline_energy": baseline_distance * estimated_consumption_wh_per_meter,
+        "required_energy": required_energy,
+        "candidates": candidates,
+    }
+
+
+def choose_least_impact_charger(
+    vehicle_id,
+    destination_edge,
+    current_charge,
+    battery_capacity,
+    charging_stations,
+    reserve_soc=0.10,
+    estimated_consumption_wh_per_meter=0.20,
+    charge_target_soc=0.90,
+):
+    """Choose a charger by added travel time, then added route distance.
+
+    The decision is also made here: ``None`` means the vehicle has enough
+    estimated energy to reach its destination with the requested reserve.
+    ``estimated_consumption_wh_per_meter`` should be calibrated to the SUMO
+    battery model used by the route file.
+    """
+    options = charger_candidates(
+        vehicle_id,
+        destination_edge,
+        current_charge,
+        battery_capacity,
+        charging_stations,
+        reserve_soc=reserve_soc,
+        estimated_consumption_wh_per_meter=estimated_consumption_wh_per_meter,
+        charge_target_soc=charge_target_soc,
+        skip_if_sufficient=True,
+    )
+    if options is None or current_charge >= options["required_energy"]:
+        return None
+
+    best = None
+    for candidate in options["candidates"]:
+        score = (candidate["added_time"], candidate["added_distance"],
+                 candidate["candidate_time"], candidate["station"])
         if best is None or score < best["score"]:
-            candidate["score"] = score
-            best = candidate
+            best = dict(candidate, score=score)
 
     return best
+
+
+def _least_impact_policy(ctx):
+    """Default charge decision: the team's least-impact rule, unchanged."""
+    choice = choose_least_impact_charger(
+        ctx["vehicle_id"],
+        ctx["destination_edge"],
+        ctx["current_charge"],
+        ctx["capacity"],
+        ctx["charging_stations"],
+        reserve_soc=ctx["reserve_soc"],
+        estimated_consumption_wh_per_meter=ctx["estimated_consumption_wh_per_meter"],
+        charge_target_soc=ctx["charge_target_soc"],
+    )
+    return lambda: (choice, {})
 
 
 def _remember_battery_levels(battery_state):
@@ -201,6 +263,10 @@ def _remember_battery_levels(battery_state):
             continue
 
 
+def _default_initial_charge(key, capacity):
+    return random.gauss(0.5 * capacity, 0.1 * capacity)
+
+
 def _initialize_battery(
     vehicle_id,
     battery_state,
@@ -208,6 +274,8 @@ def _initialize_battery(
     current_time,
     home_charge_power_w,
     home_charge_efficiency,
+    initial_charge_fn=_default_initial_charge,
+    verbose=True,
 ):
     capacity = float(
         traci.vehicle.getParameter(vehicle_id, "device.battery.capacity")
@@ -216,7 +284,7 @@ def _initialize_battery(
     charge = battery_state.get(key)
 
     if charge is None:
-        charge = random.gauss(0.5 * capacity, 0.1 * capacity)
+        charge = initial_charge_fn(key, capacity)
 
     home_arrival = home_state.pop(key, None)
     home_energy_added = 0.0
@@ -229,10 +297,11 @@ def _initialize_battery(
             * home_charge_efficiency
         )
         charge = home_arrival["charge"] + requested_energy
-        print(
-            f"{vehicle_id}: home charged {requested_energy:.1f} Wh "
-            f"after {dwell_seconds / 3600.0:.2f} h"
-        )
+        if verbose:
+            print(
+                f"{vehicle_id}: home charged {requested_energy:.1f} Wh "
+                f"after {dwell_seconds / 3600.0:.2f} h"
+            )
 
     charge = max(0.0, min(capacity, charge))
     if home_arrival is not None:
@@ -262,7 +331,7 @@ def _write_charging_totals(output_file, station_energy_wh, home_energy_wh):
             ("total", "", f"{total_energy_wh:.2f}", f"{total_energy_wh / 1000:.5f}"))
 
 
-def _dispatch_vehicle(
+def _prepare_dispatch(
     vehicle_id,
     vehicle_info,
     battery_state,
@@ -277,14 +346,16 @@ def _dispatch_vehicle(
     charge_target_soc,
     home_charge_power_w,
     home_charge_efficiency,
+    initial_charge_fn,
+    verbose,
 ):
-    """Make the charge/no-charge decision for the vehicle's current leg."""
+    """Set up the vehicle's current leg; returns the decision context, or None."""
     if traci.vehicle.getTypeID(vehicle_id) != "electric_vehicle":
-        return
+        return None
 
     route = traci.vehicle.getRoute(vehicle_id)
     if not route:
-        return
+        return None
 
     household = activitygen_vehicle_key(vehicle_id)
     _remember_home_edge(vehicle_id, route, home_edges)
@@ -296,19 +367,11 @@ def _dispatch_vehicle(
         current_time,
         home_charge_power_w,
         home_charge_efficiency,
+        initial_charge_fn,
+        verbose,
     )
     home_charging_total["energy_wh"] += home_energy_added
     destination_edge = route[-1]
-    choice = choose_least_impact_charger(
-        vehicle_id,
-        destination_edge,
-        charge,
-        capacity,
-        charging_stations,
-        reserve_soc=reserve_soc,
-        estimated_consumption_wh_per_meter=estimated_consumption_wh_per_meter,
-        charge_target_soc=charge_target_soc,
-    )
 
     info = vehicle_info.setdefault(vehicle_id, {})
     info.update({
@@ -323,6 +386,24 @@ def _dispatch_vehicle(
         "state": "to_destination",
     })
 
+    return {
+        "vehicle_id": vehicle_id,
+        "household": household,
+        "destination_edge": destination_edge,
+        "current_charge": charge,
+        "capacity": capacity,
+        "charging_stations": charging_stations,
+        "reserve_soc": reserve_soc,
+        "estimated_consumption_wh_per_meter": estimated_consumption_wh_per_meter,
+        "charge_target_soc": charge_target_soc,
+        "current_time": current_time,
+        "is_home_return": info["is_home_return"],
+        "home_charge_power_w": home_charge_power_w,
+    }
+
+
+def _apply_choice(vehicle_id, info, choice, verbose):
+    """Send the vehicle to its chosen charger (``choice`` None = drive on)."""
     if choice is None:
         return
 
@@ -333,15 +414,17 @@ def _dispatch_vehicle(
         "state": "to_charger",
     })
 
-    print(f"before change target : {vehicle_id} , {choice['edge']}")
+    if verbose:
+        print(f"before change target : {vehicle_id} , {choice['edge']}")
 
     traci.vehicle.changeTarget(vehicle_id, choice["edge"])
-    print(f"after change target : {vehicle_id} , {choice['edge']}")
-    temp_r = traci.vehicle.getRoute(vehicle_id)
-    print(f"vechicle route : {temp_r}")
-    print(f"station edge : {choice['edge']}")
-    print(f"choice station: {choice['station']}")
-    print(f"choice station in temp r {choice['edge'] in temp_r}")
+    if verbose:
+        print(f"after change target : {vehicle_id} , {choice['edge']}")
+        temp_r = traci.vehicle.getRoute(vehicle_id)
+        print(f"vechicle route : {temp_r}")
+        print(f"station edge : {choice['edge']}")
+        print(f"choice station: {choice['station']}")
+        print(f"choice station in temp r {choice['edge'] in temp_r}")
 
     traci.vehicle.setChargingStationStop(
         vehicle_id,
@@ -349,11 +432,24 @@ def _dispatch_vehicle(
         duration=100000.0,
     )
 
-    print(
-        f"{vehicle_id}: charging at {choice['station']} "
-        f"(added time={choice['added_time']:.1f}s, "
-        f"added distance={choice['added_distance']:.1f}m)"
-    )
+    if verbose:
+        print(
+            f"{vehicle_id}: charging at {choice['station']} "
+            f"(added time={choice['added_time']:.1f}s, "
+            f"added distance={choice['added_distance']:.1f}m)"
+        )
+
+
+def _close_leg(open_legs, trip_log, vehicle_id, end, current_time, charge=None):
+    leg = open_legs.pop(vehicle_id, None)
+    if leg is None:
+        return
+    leg["end"] = end
+    leg["arrive_s"] = current_time
+    leg["trip_min"] = round((current_time - leg["depart_s"]) / 60.0, 2)
+    if charge is not None:
+        leg["arrival_soc"] = round(charge / leg["capacity_wh"] * 100.0, 2)
+    trip_log.append(leg)
 
 
 def run_traci_simulation(
@@ -368,6 +464,13 @@ def run_traci_simulation(
     home_charge_efficiency=HOME_CHARGE_EFFICIENCY,
     simulation_days=SIMULATION_DAYS,
     charging_totals_file=None,
+    charge_policy=None,
+    chargers_file=None,
+    initial_charge_fn=_default_initial_charge,
+    trip_log=None,
+    sumo_seed=None,
+    sumo_log="./logging.log",
+    verbose=True,
 ):
     """Run ActivityGen trips and make charging decisions through TraCI.
 
@@ -375,6 +478,12 @@ def run_traci_simulation(
     the current leg when charging is needed, then restores the ActivityGen
     destination after charging. The ActivityGen schedule is expected to have
     been generated with the same ``simulation_days`` value (five by default).
+
+    Optional hooks used by charge_eval.py (defaults keep the behavior above):
+    ``charge_policy`` replaces the least-impact rule (see charge_policies.py);
+    ``trip_log`` (a list) receives one dict per EV leg; ``initial_charge_fn``
+    sets a household's first battery level; ``verbose=False`` silences the
+    per-step prints.
     """
     if not isinstance(simulation_days, int) or simulation_days <= 0:
         raise ValueError("simulation_days must be a positive integer")
@@ -392,10 +501,10 @@ def run_traci_simulation(
         )
     else:
         charging_totals_file = _resolve_path(charging_totals_file)
-    additional_files = [SCRIPT_DIR / "chargers_additional.xml"]
+    additional_files = [_resolve_path(chargers_file) if chargers_file
+                        else SCRIPT_DIR / "chargers_additional.xml"]
     if tracker_file is not None:
         additional_files.append(_resolve_path(tracker_file))
-    sumo_log = "./logging.log"
 
     traci_cmd = [
         "sumo",
@@ -407,6 +516,16 @@ def run_traci_simulation(
         # "--no-warnings", "true",
         "--log", str(sumo_log),
     ]
+    if sumo_seed is not None:
+        traci_cmd += ["--seed", str(sumo_seed)]
+    if not verbose:
+        traci_cmd += ["--no-step-log", "true"]
+
+    if charge_policy is None:
+        choose, resolve = _least_impact_policy, None
+    else:
+        choose = charge_policy.choose
+        resolve = getattr(charge_policy, "resolve", None)
 
     traci.start(traci_cmd)
     charging_stations = traci.chargingstation.getIDList()
@@ -416,6 +535,8 @@ def run_traci_simulation(
     battery_state = {}
     home_state = {}
     home_edges = {}
+    open_legs = {}  # vehicle_id -> trip_log record for the leg in progress
+    current_time = 0.0
 
     try:
         while traci.simulation.getMinExpectedNumber() > 0:
@@ -432,17 +553,19 @@ def run_traci_simulation(
                     continue
 
             _remember_battery_levels(battery_state)
-            print(
-                "before main step",
-                traci.simulation.getTime(),
-                flush=True,
-            )
+            if verbose:
+                print(
+                    "before main step",
+                    traci.simulation.getTime(),
+                    flush=True,
+                )
             traci.simulationStep()
-            print(
-                "after main step",
-                traci.simulation.getTime(),
-                flush=True,
-            )
+            if verbose:
+                print(
+                    "after main step",
+                    traci.simulation.getTime(),
+                    flush=True,
+                )
             current_time = traci.simulation.getTime()
 
             vehicles_at_stations = {}
@@ -483,6 +606,9 @@ def run_traci_simulation(
             # accumulated while it was at home.
             for vehicle_id in arrived:
                 info = vehicle_info.pop(vehicle_id, None)
+                if trip_log is not None and info is not None:
+                    _close_leg(open_legs, trip_log, vehicle_id, "arrived", current_time,
+                               battery_state.get(info["activitygen_key"]))
                 if info is None or not info.get("is_home_return"):
                     continue
 
@@ -492,6 +618,25 @@ def run_traci_simulation(
                         "charge": charge,
                         "arrival_time": current_time,
                     }
+
+            dispatch_args = (
+                vehicle_info,
+                battery_state,
+                home_state,
+                home_charging_total,
+                current_time,
+                home_edges,
+                home_return_trip_numbers,
+                charging_stations,
+                reserve_soc,
+                estimated_consumption_wh_per_meter,
+                charge_target_soc,
+                home_charge_power_w,
+                home_charge_efficiency,
+                initial_charge_fn,
+                verbose,
+            )
+            contexts = []
 
             # ActivityGen normally creates a new vehicle ID for each trip.
             # This catches both the home and work legs.
@@ -503,22 +648,7 @@ def run_traci_simulation(
                 # appear on trip 2 or 3 for a household.
                 _remember_home_edge(vehicle_id, route, home_edges)
 
-                _dispatch_vehicle(
-                    vehicle_id,
-                    vehicle_info,
-                    battery_state,
-                    home_state,
-                    home_charging_total,
-                    current_time,
-                    home_edges,
-                    home_return_trip_numbers,
-                    charging_stations,
-                    reserve_soc,
-                    estimated_consumption_wh_per_meter,
-                    charge_target_soc,
-                    home_charge_power_w,
-                    home_charge_efficiency,
-                )
+                contexts.append(_prepare_dispatch(vehicle_id, *dispatch_args))
 
             # If ActivityGen represents work as a stop on the same vehicle,
             # the vehicle is leaving through this event rather than a new
@@ -527,28 +657,42 @@ def run_traci_simulation(
                 info = vehicle_info.get(vehicle_id)
                 if info is None or info.pop("ignore_stop_end", False):
                     continue
+                if trip_log is not None:
+                    _close_leg(open_legs, trip_log, vehicle_id, "stop", current_time,
+                               battery_state.get(info["activitygen_key"]))
 
-                _dispatch_vehicle(
-                    vehicle_id,
-                    vehicle_info,
-                    battery_state,
-                    home_state,
-                    home_charging_total,
-                    current_time,
-                    home_edges,
-                    home_return_trip_numbers,
-                    charging_stations,
-                    reserve_soc,
-                    estimated_consumption_wh_per_meter,
-                    charge_target_soc,
-                    home_charge_power_w,
-                    home_charge_efficiency,
-                )
+                contexts.append(_prepare_dispatch(vehicle_id, *dispatch_args))
+
+            # Decide every leg starting this step before acting on any, so a
+            # policy can run its decisions concurrently (e.g. LLM requests).
+            contexts = [ctx for ctx in contexts if ctx is not None]
+            finishers = [choose(ctx) for ctx in contexts]
+            decisions = resolve(finishers) if resolve else [finish() for finish in finishers]
+            for ctx, (choice, decision_info) in zip(contexts, decisions):
+                vehicle_id = ctx["vehicle_id"]
+                if trip_log is not None:
+                    open_legs[vehicle_id] = {
+                        "vehicle_id": vehicle_id,
+                        "household": ctx["household"],
+                        "depart_s": current_time,
+                        "capacity_wh": ctx["capacity"],
+                        "start_soc": round(ctx["current_charge"] / ctx["capacity"] * 100.0, 2),
+                        "min_soc": ctx["current_charge"] / ctx["capacity"] * 100.0,
+                        "is_home_return": vehicle_info[vehicle_id]["is_home_return"],
+                        "station": choice["station"] if choice else "",
+                        "target_soc": round(choice["target_charge"] / ctx["capacity"] * 100.0, 2) if choice else "",
+                        "charge_stops": 0, "charge_min": 0.0, "wait_min": 0.0, "charged_kwh": 0.0,
+                        **decision_info,
+                    }
+                _apply_choice(vehicle_id, vehicle_info[vehicle_id], choice, verbose)
 
             active_vehicle_ids = set(traci.vehicle.getIDList())
             for vehicle_id, info in list(vehicle_info.items()):
                 if vehicle_id not in active_vehicle_ids:
                     vehicle_info.pop(vehicle_id)
+                    if trip_log is not None:
+                        _close_leg(open_legs, trip_log, vehicle_id, "vanished", current_time,
+                                   battery_state.get(info["activitygen_key"]))
                     continue
 
                 if info["state"] == "to_charger":
@@ -557,6 +701,14 @@ def run_traci_simulation(
                     )
                     if vehicle_id in station_vehicles:
                         info["state"] = "charging"
+                        if vehicle_id in open_legs:
+                            open_legs[vehicle_id]["_charge_start"] = (
+                                current_time, battery_state.get(info["activitygen_key"], 0.0))
+                    elif (vehicle_id in open_legs
+                          and traci.vehicle.getRoadID(vehicle_id) == info["station_edge"]
+                          and traci.vehicle.getSpeed(vehicle_id) < 0.1):
+                        # Queued behind the station's occupied stopping space.
+                        open_legs[vehicle_id]["wait_min"] += traci.simulation.getDeltaT() / 60.0
 
                 elif info["state"] == "charging":
                     charge = float(
@@ -565,27 +717,29 @@ def run_traci_simulation(
                             "device.battery.chargeLevel",
                         )
                     )
-                    print(
-                        "charging",
-                        vehicle_id,
-                        "station=", info["station"],
-                        "charge=", charge,
-                        "target=", info["target_charge"],
-                        "station vehicles=",
-                        traci.chargingstation.getVehicleIDs(info["station"]),
-                        "time=", traci.simulation.getTime(),
-                        flush=True,
-                    )
-                    if charge >= info["target_charge"]:
+                    if verbose:
                         print(
-                            "resuming",
+                            "charging",
                             vehicle_id,
                             "station=", info["station"],
-                            "destination=", info["destination"],
                             "charge=", charge,
                             "target=", info["target_charge"],
+                            "station vehicles=",
+                            traci.chargingstation.getVehicleIDs(info["station"]),
+                            "time=", traci.simulation.getTime(),
                             flush=True,
                         )
+                    if charge >= info["target_charge"]:
+                        if verbose:
+                            print(
+                                "resuming",
+                                vehicle_id,
+                                "station=", info["station"],
+                                "destination=", info["destination"],
+                                "charge=", charge,
+                                "target=", info["target_charge"],
+                                flush=True,
+                            )
                         traci.vehicle.resume(vehicle_id)
                         traci.vehicle.changeTarget(
                             vehicle_id,
@@ -593,18 +747,35 @@ def run_traci_simulation(
                         )
                         info["ignore_stop_end"] = True
                         info["state"] = "to_destination"
+                        leg = open_legs.get(vehicle_id)
+                        if leg is not None and "_charge_start" in leg:
+                            start_time, start_charge = leg.pop("_charge_start")
+                            leg["charge_stops"] += 1
+                            leg["charge_min"] += (current_time - start_time) / 60.0
+                            leg["charged_kwh"] += max(0.0, charge - start_charge) / 1000.0
 
             _remember_battery_levels(battery_state)
+            for vehicle_id, leg in open_legs.items():
+                charge = battery_state.get(leg["household"])
+                if charge is not None:
+                    leg["min_soc"] = min(leg["min_soc"], charge / leg["capacity_wh"] * 100.0)
     finally:
         try:
             traci.close()
         finally:
+            if trip_log is not None:
+                for vehicle_id in list(open_legs):
+                    _close_leg(open_legs, trip_log, vehicle_id, "unfinished", current_time)
             _write_charging_totals(
                 charging_totals_file,
                 station_energy_wh,
                 home_charging_total["energy_wh"],
             )
             print(f"Charging totals saved to {charging_totals_file}")
+    return {
+        "station_energy_wh": station_energy_wh,
+        "home_energy_wh": home_charging_total["energy_wh"],
+    }
 
 
 if __name__ == "__main__":

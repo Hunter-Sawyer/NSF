@@ -1,0 +1,56 @@
+<routes>
+    <!-- ActivityGen-style smoke test: 12 households, home -> work -> home, 2 days. -->
+    <!-- Small battery so public-charging decisions actually happen on this tiny grid. -->
+    <vType id="electric_vehicle" vClass="passenger">
+        <param key="has.battery.device" value="true"/>
+        <param key="device.battery.capacity" value="1000"/>
+    </vType>
+    <trip id="h1c1:1" type="electric_vehicle" depart="25397" from="A1A2" to="C4D4" departLane="best"/>
+    <trip id="h5c1:1" type="electric_vehicle" depart="25571" from="B0C0" to="E2E3" departLane="best"/>
+    <trip id="h2c1:1" type="electric_vehicle" depart="25585" from="A2A3" to="D3D4" departLane="best"/>
+    <trip id="h10c1:1" type="electric_vehicle" depart="25745" from="A0B0" to="D4E4" departLane="best"/>
+    <trip id="h9c1:1" type="electric_vehicle" depart="26105" from="A3A4" to="E1E2" departLane="best"/>
+    <trip id="h0c1:1" type="electric_vehicle" depart="26526" from="A0A1" to="E3E4" departLane="best"/>
+    <trip id="h4c1:1" type="electric_vehicle" depart="26976" from="A0B0" to="D4E4" departLane="best"/>
+    <trip id="h3c1:1" type="electric_vehicle" depart="27278" from="A3A4" to="E1E2" departLane="best"/>
+    <trip id="h11c1:1" type="electric_vehicle" depart="27414" from="B0C0" to="E2E3" departLane="best"/>
+    <trip id="h8c1:1" type="electric_vehicle" depart="27563" from="A2A3" to="D3D4" departLane="best"/>
+    <trip id="h7c1:1" type="electric_vehicle" depart="27783" from="A1A2" to="C4D4" departLane="best"/>
+    <trip id="h6c1:1" type="electric_vehicle" depart="28586" from="A0A1" to="E3E4" departLane="best"/>
+    <trip id="h9c1:2" type="electric_vehicle" depart="61390" from="E2E1" to="A3A4" departLane="best"/>
+    <trip id="h1c1:2" type="electric_vehicle" depart="61496" from="D4C4" to="A1A2" departLane="best"/>
+    <trip id="h11c1:2" type="electric_vehicle" depart="61682" from="E3E2" to="B0C0" departLane="best"/>
+    <trip id="h0c1:2" type="electric_vehicle" depart="61817" from="E4E3" to="A0A1" departLane="best"/>
+    <trip id="h3c1:2" type="electric_vehicle" depart="62079" from="E2E1" to="A3A4" departLane="best"/>
+    <trip id="h10c1:2" type="electric_vehicle" depart="62386" from="E4D4" to="A0B0" departLane="best"/>
+    <trip id="h2c1:2" type="electric_vehicle" depart="62697" from="D4D3" to="A2A3" departLane="best"/>
+    <trip id="h4c1:2" type="electric_vehicle" depart="62912" from="E4D4" to="A0B0" departLane="best"/>
+    <trip id="h5c1:2" type="electric_vehicle" depart="63457" from="E3E2" to="B0C0" departLane="best"/>
+    <trip id="h6c1:2" type="electric_vehicle" depart="63516" from="E4E3" to="A0A1" departLane="best"/>
+    <trip id="h8c1:2" type="electric_vehicle" depart="63598" from="D4D3" to="A2A3" departLane="best"/>
+    <trip id="h7c1:2" type="electric_vehicle" depart="63769" from="D4C4" to="A1A2" departLane="best"/>
+    <trip id="h3c1:3" type="electric_vehicle" depart="111753" from="A3A4" to="E1E2" departLane="best"/>
+    <trip id="h4c1:3" type="electric_vehicle" depart="111886" from="A0B0" to="D4E4" departLane="best"/>
+    <trip id="h6c1:3" type="electric_vehicle" depart="112107" from="A0A1" to="E3E4" departLane="best"/>
+    <trip id="h0c1:3" type="electric_vehicle" depart="113217" from="A0A1" to="E3E4" departLane="best"/>
+    <trip id="h8c1:3" type="electric_vehicle" depart="113224" from="A2A3" to="D3D4" departLane="best"/>
+    <trip id="h10c1:3" type="electric_vehicle" depart="113316" from="A0B0" to="D4E4" departLane="best"/>
+    <trip id="h5c1:3" type="electric_vehicle" depart="113338" from="B0C0" to="E2E3" departLane="best"/>
+    <trip id="h9c1:3" type="electric_vehicle" depart="113880" from="A3A4" to="E1E2" departLane="best"/>
+    <trip id="h11c1:3" type="electric_vehicle" depart="113938" from="B0C0" to="E2E3" departLane="best"/>
+    <trip id="h2c1:3" type="electric_vehicle" depart="113987" from="A2A3" to="D3D4" departLane="best"/>
+    <trip id="h7c1:3" type="electric_vehicle" depart="113987" from="A1A2" to="C4D4" departLane="best"/>
+    <trip id="h1c1:3" type="electric_vehicle" depart="114963" from="A1A2" to="C4D4" departLane="best"/>
+    <trip id="h8c1:4" type="electric_vehicle" depart="147803" from="D4D3" to="A2A3" departLane="best"/>
+    <trip id="h2c1:4" type="electric_vehicle" depart="147837" from="D4D3" to="A2A3" departLane="best"/>
+    <trip id="h5c1:4" type="electric_vehicle" depart="147842" from="E3E2" to="B0C0" departLane="best"/>
+    <trip id="h7c1:4" type="electric_vehicle" depart="147853" from="D4C4" to="A1A2" departLane="best"/>
+    <trip id="h3c1:4" type="electric_vehicle" depart="147952" from="E2E1" to="A3A4" departLane="best"/>
+    <trip id="h10c1:4" type="electric_vehicle" depart="148190" from="E4D4" to="A0B0" departLane="best"/>
+    <trip id="h6c1:4" type="electric_vehicle" depart="148514" from="E4E3" to="A0A1" departLane="best"/>
+    <trip id="h4c1:4" type="electric_vehicle" depart="148585" from="E4D4" to="A0B0" departLane="best"/>
+    <trip id="h11c1:4" type="electric_vehicle" depart="148863" from="E3E2" to="B0C0" departLane="best"/>
+    <trip id="h1c1:4" type="electric_vehicle" depart="149794" from="D4C4" to="A1A2" departLane="best"/>
+    <trip id="h0c1:4" type="electric_vehicle" depart="150266" from="E4E3" to="A0A1" departLane="best"/>
+    <trip id="h9c1:4" type="electric_vehicle" depart="151116" from="E2E1" to="A3A4" departLane="best"/>
+</routes>
