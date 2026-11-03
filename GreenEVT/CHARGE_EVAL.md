@@ -168,5 +168,7 @@ lists everything.
 | `plan_status` = `infeasible` for many trips | starting SoC too low to reach any charger under the energy proxy; check `--wh-per-km` and `--soc-mean` |
 | LLM run slow | expected ~1 call per EV; check `llm_latency_s_mean`; raise `--llm-concurrency` if many EVs depart together |
 
-`Scripts/traci_testing.py` is the older single-policy script and currently
-crashes on `recompute_total_time_from_path`'s arguments; it isn't used here.
+`Scripts/traci_testing.py` is the team's separate multi-day ActivityGen sim
+(home charging, least-impact charger choice). The evaluation doesn't use it:
+`charge_eval.py` has its own single-trip runner and only borrows
+`plan_ev_route` / `force_last_charge_to_80` from `routing.py`.

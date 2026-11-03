@@ -330,7 +330,7 @@ column=None, cmap='viridis', legend=True,network_path = "..\\data\\Palo Alto\\PA
     root = doc.documentElement
 
 
-exclusion_percents(0.0,shapefile_path = "..\\..\\Cali_traffic_uknown\\Annual_average_daily_traffic.shp", network_path = "..\\data\\Palo Alto\\PA.network.net.xml",bbox_coords=box(-122.25,37.35,-122.0,37.5))
+exclusion_percents(0.0,shapefile_path = "..\\..\\Cali_traffic_uknown\\Annual_average_daily_traffic.shp", network_path = "..\\data\\Palo_Alto\\PA.network.net.xml",bbox_coords=box(-122.25,37.35,-122.0,37.5))
 #exclusion_percents(0.35,seed=891)
 #generate_radial_triangles(center=(40000,35888), radius=65000-35888, n_triangles=5)
 #plot_shapefile()
