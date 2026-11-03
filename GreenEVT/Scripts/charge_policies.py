@@ -1,145 +1,114 @@
 """
-Charge decision-making policies compared by charge_eval.py.
+Charge decision-making policies for traci_testing.run_traci_simulation
+(the multi-day ActivityGen sim), compared by charge_eval.py.
 
-Every policy turns a trip context into a plan in routing.plan_ev_route's
-format -- [(node, action, soc_after_action), ...] -- so the TraCI executor in
-charge_eval.py runs all three identically and only the decision differs:
+Each policy decides, at the start of every EV leg, whether to stop at a
+public charger, which one, and the target charge -- the same decision
+traci_testing.choose_least_impact_charger makes by default:
 
-    base  -- routing.plan_ev_route + force_last_charge_to_80 (current logic)
-    risk  -- same planner, but SoC buffers come from a per-driver Gaussian
-             riskiness score instead of the fixed 0% / 80% rules
-    llm   -- one LLM call at trip outset (vLLM on the HPC, via SSH tunnel)
-             picks whether/where/how much to charge; the plan is built from
-             that decision and executed as-is
+    base  -- choose_least_impact_charger as-is (10% reserve, charge to 90%)
+    risk  -- the same rule, but each household's Gaussian riskiness score
+             sets its reserve and charge target
+    llm   -- an LLM (vLLM on the HPC) sees the leg and the same charger
+             candidates and makes the call
+
+Interface used by the sim: ``choose(ctx)`` runs on the main thread (it may
+call TraCI) and returns a zero-argument ``finish`` callable giving
+``(choice, info)``; ``choice`` is None (drive on) or a dict with
+``station``, ``edge``, ``target_charge`` (Wh), ``added_time``,
+``added_distance``, and ``info`` is logged with the leg. ``resolve(finishers)``
+runs the finishers -- concurrently for the LLM, which never touches TraCI
+from a worker thread.
 """
 import hashlib
-import heapq
-import itertools
 import json
-import math
 import os
+import random
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
-import routing
+import traci
+
+import traci_testing
 
 
-def plan_path_soc(path):
-    """Lowest SoC (proxy %) a plan predicts along the way."""
-    return min(step[2] for step in path)
+def _least_impact(ctx, reserve_soc, charge_target_soc):
+    choice = traci_testing.choose_least_impact_charger(
+        ctx["vehicle_id"], ctx["destination_edge"], ctx["current_charge"],
+        ctx["capacity"], ctx["charging_stations"],
+        reserve_soc=reserve_soc,
+        estimated_consumption_wh_per_meter=ctx["estimated_consumption_wh_per_meter"],
+        charge_target_soc=charge_target_soc,
+    )
+    return choice
 
 
 class BasePolicy:
     name = "base"
 
-    def assign_traits(self, rng):
-        return {}
-
-    def _plan(self, ctx, min_destination_soc=0.0):
-        return routing.plan_ev_route(
-            origin=ctx["origin"],
-            destination=ctx["destination"],
-            initial_soc=ctx["soc_pct"],
-            stations_graph=ctx["graph"],
-            vehicle_profile=ctx["profile"],
-            real_time_status=ctx["status"],
-            min_destination_soc=min_destination_soc,
-            charge_nodes=ctx["charge_nodes"],
-        )
-
-    def decide(self, ctx):
-        plan = routing.force_last_charge_to_80(self._plan(ctx))
-        return plan, {}
+    def choose(self, ctx):
+        choice = _least_impact(ctx, ctx["reserve_soc"], ctx["charge_target_soc"])
+        return lambda: (choice, {})
 
 
-class RiskPolicy(BasePolicy):
+class RiskPolicy:
     """
-    Riskiness r ~ N(mean, sd), clipped to [0, 1]; 0 = most cautious, 1 = most
-    risk-tolerant. r linearly sets:
-      - min_destination_soc: buffer_cautious (r=0) -> buffer_risky (r=1)
-      - minimum SoC when leaving the last charger: floor_cautious -> floor_risky
-        (replaces the fixed 80% rule)
-    If the buffer makes the trip infeasible, it's relaxed to 0 rather than
-    leaving the driver without a plan.
+    Riskiness r ~ N(mean, sd), clipped to [0, 1], drawn once per household
+    (seeded, so every run sees the same drivers); 0 = most cautious. r sets:
+      - reserve kept on arrival: reserve_cautious (r=0) -> reserve_risky (r=1)
+      - charge target at the charger: target_cautious -> target_risky
     """
     name = "risk"
 
-    def __init__(self, mean=0.5, sd=0.2, buffer_cautious=30.0, buffer_risky=5.0,
-                 floor_cautious=90, floor_risky=50):
-        self.mean, self.sd = mean, sd
-        self.buffer_cautious, self.buffer_risky = buffer_cautious, buffer_risky
-        self.floor_cautious, self.floor_risky = floor_cautious, floor_risky
+    def __init__(self, seed=42, mean=0.5, sd=0.2, reserve_cautious=0.30, reserve_risky=0.05,
+                 target_cautious=0.90, target_risky=0.50):
+        self.seed, self.mean, self.sd = seed, mean, sd
+        self.reserve_cautious, self.reserve_risky = reserve_cautious, reserve_risky
+        self.target_cautious, self.target_risky = target_cautious, target_risky
+        self.riskiness = {}
 
-    def assign_traits(self, rng):
-        return {"riskiness": min(1.0, max(0.0, rng.gauss(self.mean, self.sd)))}
+    def _riskiness(self, household):
+        if household not in self.riskiness:
+            rng = random.Random(f"{self.seed}:{household}:risk")
+            self.riskiness[household] = min(1.0, max(0.0, rng.gauss(self.mean, self.sd)))
+        return self.riskiness[household]
 
-    def decide(self, ctx):
-        r = ctx["traits"]["riskiness"]
-        buffer = self.buffer_cautious + r * (self.buffer_risky - self.buffer_cautious)
-        floor = self.floor_cautious + r * (self.floor_risky - self.floor_cautious)
-        floor = min(100, int(math.ceil(floor / 10.0)) * 10)  # planner's soc_step grid
-
-        plan = self._plan(ctx, min_destination_soc=buffer)
-        relaxed = False
-        if plan is None:
-            plan = self._plan(ctx)
-            relaxed = plan is not None
-        plan = routing.force_last_charge_to_80(plan, floor=floor)
-        return plan, {"dest_buffer": round(buffer, 1), "depart_floor": floor,
-                      "buffer_relaxed": relaxed}
+    def choose(self, ctx):
+        r = self._riskiness(ctx["household"])
+        reserve = self.reserve_cautious + r * (self.reserve_risky - self.reserve_cautious)
+        target = self.target_cautious + r * (self.target_risky - self.target_cautious)
+        choice = _least_impact(ctx, reserve, target)
+        info = {"riskiness": round(r, 3), "reserve_soc": round(reserve, 3),
+                "charge_target_soc": round(target, 3)}
+        return lambda: (choice, info)
 
 
-def shortest_times(adj, source):
-    """Dijkstra on driving_time. adj: {node: [(nbr, minutes, energy_wh), ...]}."""
-    dist, energy, pred = {source: 0.0}, {source: 0.0}, {source: None}
-    counter = itertools.count()
-    pq = [(0.0, next(counter), source)]
-    done = set()
-    while pq:
-        d, _, u = heapq.heappop(pq)
-        if u in done:
-            continue
-        done.add(u)
-        for v, minutes, wh in adj.get(u, ()):
-            nd = d + minutes
-            if nd < dist.get(v, math.inf):
-                dist[v], energy[v], pred[v] = nd, energy[u] + wh, u
-                heapq.heappush(pq, (nd, next(counter), v))
-    return dist, energy, pred
-
-
-def _walk(pred, end):
-    nodes = []
-    while end is not None:
-        nodes.append(end)
-        end = pred[end]
-    return nodes[::-1]
-
-
-SYSTEM_PROMPT = """You are an electric-vehicle driver planning one trip before you leave.
-Decide whether to stop at a public charger on the way, which one, and what state of charge (SoC, %) to charge to.
-You care about: (1) not running the battery empty before the destination, (2) total trip time, including detour, queueing and charging time.
+SYSTEM_PROMPT = """You are an electric-vehicle driver about to start one leg of your day.
+Decide whether to stop at a public charger on this leg, which one, and what state of charge (SoC, %) to charge to.
+You care about: (1) not running the battery empty, on this leg or the ones after it today, (2) total time, including detour, queueing and charging time.
 Energy estimates are approximate. Respond only by calling the charge_decision tool."""
 
-USER_TEMPLATE = """Trip context:
+USER_TEMPLATE = """Leg context:
+- Time of day: {clock}
 - Current SoC: {soc:.1f}% of a {cap_kwh:.1f} kWh battery
-- Direct route (no charging): {direct_min:.1f} min, uses about {direct_pct:.1f}% SoC, predicted arrival SoC {direct_arrival:.1f}%
-- Candidate chargers (sorted by detour):
+- This leg ends {destination}
+- Driving straight there: {direct_min:.1f} min, uses about {direct_pct:.1f}% SoC, predicted arrival SoC {direct_arrival:.1f}%
+- Public chargers you could stop at (sorted by detour):
 {stations}
 
-Call charge_decision with charge=false to drive directly, or charge=true with a station_id from the list and a target_soc."""
+Call charge_decision with charge=false to drive straight there, or charge=true with a station_id from the list and a target_soc."""
 
 STATION_LINE = ("  * station_id={sid}: detour +{detour:.1f} min, SoC on arrival {arr:.1f}%, "
-                "needs {after:.1f}% SoC from there to destination, {kw:.0f} kW "
-                "(~{rate:.1f} min per 10% SoC), {occ}/{stalls} stalls occupied, "
-                "est. queue wait {wait:.0f} min")
+                "needs {after:.1f}% SoC from there to your destination, {kw:.0f} kW "
+                "(~{rate:.1f} min per 10% SoC), {occ} vehicle(s) there now")
 
 CHARGE_TOOL = {
     "type": "function",
     "function": {
         "name": "charge_decision",
-        "description": "Your charging decision for this trip.",
+        "description": "Your charging decision for this leg.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -154,17 +123,18 @@ CHARGE_TOOL = {
 }
 
 
-class LLMPolicy(BasePolicy):
+class LLMPolicy:
     """
-    One OpenAI-compatible chat call per trip (vLLM via `ssh -L 8000:gpunodeXXX:PORT`).
-    The decision is executed even if the energy proxy predicts it runs out --
-    that's the behavior being evaluated. Only malformed/failed responses fall
-    back to BasePolicy, and that's recorded as llm_fallback.
+    One OpenAI-compatible chat call per EV leg, sent concurrently for legs
+    starting in the same step. The decision is executed even if the energy
+    estimate says it runs out -- that's the behavior being evaluated. Only
+    failed or malformed responses fall back to the base rule (recorded as
+    llm_fallback).
     """
     name = "llm"
 
     def __init__(self, endpoint="http://localhost:8000/v1", model=None, max_candidates=5,
-                 timeout=120, cache_path=None, disable_thinking=True):
+                 timeout=120, cache_path=None, disable_thinking=True, concurrency=16):
         self.endpoint = endpoint.rstrip("/")
         self.timeout = timeout
         self.model = model or self._detect_model()
@@ -175,6 +145,8 @@ class LLMPolicy(BasePolicy):
         if cache_path and os.path.exists(cache_path):
             with open(cache_path) as f:
                 self.cache = json.load(f)
+        self.pool = ThreadPoolExecutor(concurrency)
+        self.station_power_w = {}
 
     def _http(self, path, payload=None):
         req = urllib.request.Request(
@@ -190,54 +162,81 @@ class LLMPolicy(BasePolicy):
             return self._http("/models")["data"][0]["id"]
         except (urllib.error.URLError, OSError) as e:
             raise RuntimeError(
-                f"Can't reach the model at {self.endpoint} ({e}). Is the SLURM job running "
-                f"and the SSH tunnel up (ssh -L 8000:gpunodeXXX:PORT ...)?") from e
+                f"Can't reach the model at {self.endpoint} ({e}). Is the model job "
+                f"running (squeue -u $USER)?") from e
 
-    def save_cache(self):
+    def close(self):
+        self.pool.shutdown()
         if self.cache_path:
             with open(self.cache_path, "w") as f:
                 json.dump(self.cache, f, indent=1)
 
-    def _candidates(self, ctx):
-        world = ctx["world"]
-        cap = ctx["capacity_wh"]
-        origin, dest, soc = ctx["origin"], ctx["destination"], ctx["soc_pct"]
-        fwd = shortest_times(world.adj, origin)
-        bwd = shortest_times(world.radj, dest)
-        if dest not in fwd[0]:
-            return None, []
-        direct = {"minutes": fwd[0][dest], "pct": fwd[1][dest] / cap * 100,
-                  "nodes": _walk(fwd[2], dest)}
+    def resolve(self, finishers):
+        if len(finishers) <= 1:
+            return [finish() for finish in finishers]
+        return list(self.pool.map(lambda finish: finish(), finishers))
 
-        cands = []
-        for node, sid in world.node_station.items():
-            if node not in fwd[0] or node not in bwd[0]:
-                continue
-            to_min, to_pct = fwd[0][node], fwd[1][node] / cap * 100
-            from_min, from_pct = bwd[0][node], bwd[1][node] / cap * 100
-            status = ctx["status"].get(node, {})
-            power_kw = world.station_power_w[sid] / 1000.0
-            cands.append({
-                "node": node, "sid": sid,
-                "detour": to_min + from_min - direct["minutes"],
-                "arr": soc - to_pct, "after": from_pct, "kw": power_kw,
-                "rate": ctx["profile"]["charge_curve_at"](node, 0, 10),
-                "occ": status.get("occupied", 0), "stalls": status.get("stalls", 1),
-                "wait": routing._estimate_wait(status or None),
-                "nodes_to": _walk(fwd[2], node),
-                "nodes_from": _walk(bwd[2], node)[::-1],  # reverse-graph walk runs dest -> node
-            })
-        cands.sort(key=lambda c: c["detour"])
-        return direct, cands[:self.max_candidates]
+    def _power_w(self, station_id):
+        if station_id not in self.station_power_w:
+            try:
+                self.station_power_w[station_id] = traci.chargingstation.getChargingPower(station_id)
+            except (AttributeError, traci.TraCIException):
+                self.station_power_w[station_id] = 22000.0
+        return self.station_power_w[station_id]
 
-    def _messages(self, ctx, direct, cands):
-        stations = "\n".join(STATION_LINE.format(**c) for c in cands) or "  (none reachable)"
+    def choose(self, ctx):
+        # TraCI work happens here on the main thread; finish() only does HTTP.
+        cap, charge = ctx["capacity"], ctx["current_charge"]
+        wh_per_m = ctx["estimated_consumption_wh_per_meter"]
+        options = traci_testing.charger_candidates(
+            ctx["vehicle_id"], ctx["destination_edge"], charge, cap, ctx["charging_stations"],
+            reserve_soc=0.0, estimated_consumption_wh_per_meter=wh_per_m)
+        if options is None:
+            return lambda: (None, {"llm_fallback": "no_route"})
+        fallback = _least_impact(ctx, ctx["reserve_soc"], ctx["charge_target_soc"])
+
+        pct = lambda wh: wh / cap * 100.0
+        cands = sorted(options["candidates"], key=lambda c: c["added_time"])[:self.max_candidates]
+        lines = []
+        for c in cands:
+            power = self._power_w(c["station"])
+            lines.append(STATION_LINE.format(
+                sid=c["station"], detour=c["added_time"] / 60.0,
+                arr=pct(charge - c["energy_to_station"]), after=pct(c["energy_from_station"]),
+                kw=power / 1000.0, rate=cap * 0.1 / (power * 0.95) * 60.0,
+                occ=traci.chargingstation.getVehicleCount(c["station"])))
+        t = int(ctx["current_time"])
         user = USER_TEMPLATE.format(
-            soc=ctx["soc_pct"], cap_kwh=ctx["capacity_wh"] / 1000.0,
-            direct_min=direct["minutes"], direct_pct=direct["pct"],
-            direct_arrival=ctx["soc_pct"] - direct["pct"], stations=stations)
-        return [{"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user}]
+            clock=f"day {t // 86400 + 1}, {t % 86400 // 3600:02d}:{t % 3600 // 60:02d}",
+            soc=pct(charge), cap_kwh=cap / 1000.0,
+            destination=(f"at home, where you can charge overnight at "
+                         f"{ctx['home_charge_power_w'] / 1000:.1f} kW" if ctx["is_home_return"]
+                         else "away from home (no home charger there)"),
+            direct_min=options["baseline_time"] / 60.0, direct_pct=pct(options["baseline_energy"]),
+            direct_arrival=pct(charge - options["baseline_energy"]),
+            stations="\n".join(lines) or "  (none reachable)")
+        messages = [{"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user}]
+        by_sid = {c["station"]: c for c in cands}
+
+        def finish():
+            info = {"llm_prompt": user}
+            try:
+                decision, latency, cached = self._ask(messages)
+            except (urllib.error.URLError, OSError, KeyError, IndexError, ValueError) as e:
+                return fallback, {**info, "llm_fallback": f"request_failed: {e}"}
+            info.update(llm_latency_s=round(latency, 3), llm_cached=cached,
+                        llm_decision=json.dumps(decision))
+            if not decision.get("charge"):
+                return None, info
+            sid, target = decision.get("station_id"), decision.get("target_soc")
+            if sid not in by_sid or not isinstance(target, int) or not 0 <= target <= 100:
+                return fallback, {**info, "llm_fallback": f"invalid_decision: {decision}"}
+            c = by_sid[sid]
+            return {"station": sid, "edge": c["edge"], "target_charge": target / 100.0 * cap,
+                    "added_time": c["added_time"], "added_distance": c["added_distance"]}, info
+
+        return finish
 
     def _ask(self, messages):
         key = hashlib.sha256(json.dumps([self.model, messages]).encode()).hexdigest()
@@ -260,47 +259,6 @@ class LLMPolicy(BasePolicy):
             decision = json.loads(msg.get("content") or "")
         self.cache[key] = decision
         return decision, latency, False
-
-    def _path_from_nodes(self, ctx, nodes, soc, path):
-        graph = ctx["graph"]
-        for prev, nxt in zip(nodes, nodes[1:]):
-            soc -= graph[prev][nxt]["soc_cost"]
-            path.append((nxt, "drive_to", round(soc, 1)))
-        return soc
-
-    def decide(self, ctx):
-        direct, cands = self._candidates(ctx)
-        if direct is None:
-            return None, {"llm_fallback": "no_route"}
-        messages = self._messages(ctx, direct, cands)
-        info = {"llm_prompt": messages[1]["content"]}
-        try:
-            decision, latency, cached = self._ask(messages)
-        except (urllib.error.URLError, OSError, KeyError, IndexError, ValueError) as e:
-            plan, _ = super().decide(ctx)
-            return plan, {**info, "llm_fallback": f"request_failed: {e}"}
-        info.update(llm_latency_s=round(latency, 3), llm_cached=cached,
-                    llm_decision=json.dumps(decision))
-
-        by_sid = {c["sid"]: c for c in cands}
-        charge = bool(decision.get("charge"))
-        sid = decision.get("station_id")
-        target = decision.get("target_soc")
-        if charge and (sid not in by_sid or not isinstance(target, int) or not 0 <= target <= 100):
-            plan, _ = super().decide(ctx)
-            return plan, {**info, "llm_fallback": f"invalid_decision: {decision}"}
-
-        soc = ctx["soc_pct"]
-        path = [(ctx["origin"], "start", soc)]
-        if not charge:
-            self._path_from_nodes(ctx, direct["nodes"], soc, path)
-        else:
-            c = by_sid[sid]
-            soc = self._path_from_nodes(ctx, c["nodes_to"], soc, path)
-            target = max(target, math.ceil(soc))  # can't "charge" downward
-            path.append((c["node"], f"charge_to_{target}%_immediately", target))
-            self._path_from_nodes(ctx, c["nodes_from"], target, path)
-        return {"path": path, "total_time_minutes": None}, info
 
 
 def endpoint_from_file(path, timeout=10):
@@ -331,9 +289,10 @@ def make_policy(name, args, out_dir):
     if name == "base":
         return BasePolicy()
     if name == "risk":
-        return RiskPolicy(mean=args.risk_mean, sd=args.risk_sd)
+        return RiskPolicy(seed=args.seed, mean=args.risk_mean, sd=args.risk_sd)
     if name == "llm":
         return LLMPolicy(endpoint=args.llm_endpoint, model=args.llm_model,
                          cache_path=os.path.join(out_dir, "llm_cache.json"),
-                         disable_thinking=not args.llm_thinking)
+                         disable_thinking=not args.llm_thinking,
+                         concurrency=args.llm_concurrency)
     raise ValueError(f"unknown policy {name!r}")

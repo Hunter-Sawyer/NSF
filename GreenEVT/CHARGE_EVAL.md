@@ -1,13 +1,20 @@
 # Charge decision evaluation -- HPC runbook
 
 Compares three ways an EV driver decides when, where and how much to charge,
-on the same SUMO scenario and the same vehicle population:
+inside the team's multi-day ActivityGen sim (`Scripts/traci_testing.py`):
+batteries carry over between a household's legs, cars charge at home
+overnight, and at the start of every EV leg one decision is made -- drive
+on, or detour to a public charger and charge to a target. Only that
+decision changes between policies:
 
 | policy | what decides |
 |---|---|
-| `base` | `routing.plan_ev_route` + 80% minimum when leaving the last charger (current logic) |
-| `risk` | same planner; a per-driver riskiness score r ~ N(0.5, 0.2) sets the arrival buffer (30% cautious -> 5% risky) and the minimum SoC leaving the last charger (90% -> 50%) |
-| `llm` | one LLM call per trip at departure picks charge / station / target SoC (Qwen3-14B-AWQ served by vLLM) |
+| `base` | the sim's own `choose_least_impact_charger`: charge only if the leg can't be finished with a 10% reserve; pick the charger with the least added time; charge to 90% |
+| `risk` | the same rule, but each household gets a riskiness score r ~ N(0.5, 0.2) that sets its reserve (30% cautious -> 5% risky) and charge target (90% -> 50%) |
+| `llm` | Qwen3-14B-AWQ (vLLM) sees the leg -- time of day, SoC, whether it ends at home, and the same charger options -- and picks charge / station / target SoC |
+
+All three get the same households, first-day battery levels (seeded per
+household) and SUMO seed.
 
 Two separate SLURM jobs:
 
@@ -25,11 +32,11 @@ appear, so both can be submitted back to back.
 
 | file | purpose |
 |---|---|
-| `Scripts/charge_eval.py` | runs each policy in SUMO, collects metrics, writes `summary.csv` |
+| `Scripts/traci_testing.py` | the team's multi-day sim; takes an optional `charge_policy` and `trip_log` (default behavior unchanged) |
+| `Scripts/charge_eval.py` | runs the sim once per policy, writes per-leg `trips.csv` and a side-by-side `summary.csv` |
 | `Scripts/charge_policies.py` | the three policies + LLM client (stdlib HTTP only) |
-| `Scripts/routing.py` | planner (now takes `charge_nodes` and per-station charge curves) |
 | `Scripts/hpc/setup_sim_env.sh`, `requirements.txt` | sim venv (SUMO from the `eclipse-sumo` wheel) |
-| `Scripts/hpc/smoke/` | tiny 5x5 grid scenario for checking the pipeline works |
+| `Scripts/hpc/smoke/` | tiny 5x5 grid, 12 households commuting for 2 days, for checking the pipeline works |
 | `llm_server/setup_env.sh`, `requirements.txt` | model venv (vLLM) |
 
 ## 1. One-time setup
@@ -92,15 +99,16 @@ booking -- the rest of the setup depends on both.
 
 ## 2. Smoke test (does it work?)
 
-Uses the bundled grid with a deliberately tiny battery so charging decisions
-actually happen. Takes a few minutes once the model is up.
+Uses the bundled grid: 12 households commuting home -> work -> home for 2
+days (48 EV legs), with a deliberately tiny battery so public-charging
+decisions actually happen. Takes a few minutes once the model is up.
 
 ```bash
 cd <repo>/GreenEVT/llm_server
 sbatch serve_model.slurm
 
 cd ../Scripts/hpc
-sbatch --export=ALL,NET=hpc/smoke/dummy_grid.net.xml,ROUTES=hpc/smoke/routes.xml,CHARGERS=hpc/smoke/chargers.xml,EXTRA_ARGS="--soc-mean 25" run_charge_eval.slurm
+sbatch --export=ALL,NET=hpc/smoke/dummy_grid.net.xml,ROUTES=hpc/smoke/routes.xml,CHARGERS=hpc/smoke/chargers.xml,DAYS=2,EXTRA_ARGS="--soc-mean 25" run_charge_eval.slurm
 
 squeue -u $USER
 ```
@@ -110,48 +118,59 @@ Paths in `NET`/`ROUTES`/`CHARGERS` are relative to `GreenEVT/Scripts`
 `llm_server/`, `charge-eval-sim-<jobid>.log` in `Scripts/hpc/`.
 
 **It works if** the sim log ends with a table and `Wrote .../summary.csv`, and:
-- `ev_trips` = 24 and `completed` = 24 for all three policies
-- `trips_charging_pct` > 0 for `risk` and `llm` (charging decisions are executed)
+- `ev_legs` = 48 and `completed` = 48 for all three policies
+- `legs_charging_pct` > 0 for all three (charging decisions are executed)
 - `llm_fallbacks` = 0, or at least small -- fallbacks mean the model's reply
   was unusable; the reason is in the `llm_fallback` column of `llm/trips.csv`
 - `llm_latency_s_mean` is a number, not `nan`
 
 Results: `$WORK/charge_eval_out/seed_42_<jobid>/` -- `summary.csv`, and per
-policy `trips.csv` (one row per vehicle; for llm includes the prompt and the
-model's decision), `stations.csv`, SUMO's `charging_stations_output.xml`.
+policy `trips.csv` (one row per EV leg: start/arrival/min SoC, charger and
+target, charge and queue time; for risk the household's riskiness; for llm the
+prompt and the model's decision), `charging_totals.csv` (public energy per
+station and home energy), and `sumo.log`.
 
 For reference, a local run of this exact smoke test against a stub model gave
-base / risk / llm `trips_charging_pct` of 8.3 / 70.8 / 75.0; base and risk
-should match that on the HPC (same seed), llm will differ with the real model.
+base / risk / llm `legs_charging_pct` of 12.5 / 12.5 / 20.8 and `depleted` of
+2 / 2 / 0; base and risk should match that on the HPC (same seed), llm will
+differ with the real model. SUMO's `Warning: Battery of vehicle ... is
+depleted` lines in the log correspond to the `depleted` count.
 
 A `Could not connect to TraCI server ... Retrying` line at the start of each
 policy is normal -- SUMO is still starting up.
 
 ## 3. Real runs (Palo Alto)
 
+Use the same ActivityGen route file (and tracker, if any) the team runs
+`traci_testing.py` with, and the number of days it was generated for:
+
 ```bash
-sbatch --export=ALL,NET=<PA.net.xml>,ROUTES=<PA routes>,SEED=42 run_charge_eval.slurm
+sbatch --export=ALL,NET=<PA.net.xml>,ROUTES=<activitygen .rou.xml>,TRACKER=<tracker.xml>,DAYS=5,SEED=42 run_charge_eval.slurm
 ```
 
 - `CHARGERS` defaults to `./chargers_additional.xml` (in `Scripts/`).
-- EVs are recognised by vType id `electric_vehicle` (`--ev-type` to change)
-  and need the battery device params, as in `Scripts/test_PA_rou.xml`.
+- EVs are the vType `electric_vehicle` with the battery device params, and
+  trip IDs follow ActivityGen's `<household>:<trip number>` form -- the sim
+  uses them to carry battery state and detect return-home legs.
 - Several seeds can run as parallel sim jobs against one model job.
 - `POLICIES="base risk"` runs without the model job at all.
 
 Calibrate after the first run:
-- **Energy proxy:** the planner assumes `--wh-per-km 170`; the summary's
-  `sim_wh_per_km` is what SUMO actually used (~300-370 on the grid). Re-run with
-  `EXTRA_ARGS="--wh-per-km <that value>"` or base will under-plan.
-- **Does anyone need to charge?** With 50 kWh batteries at ~50% SoC and short
-  urban trips, no policy charges and all three look identical. Lower
-  `--soc-mean` (or use longer/chained trips) until `trips_charging_pct` is
-  meaningfully above 0.
+- **Energy estimate:** decisions use `--wh-per-m 0.20` (the sim's default).
+  SUMO's battery model used ~0.31-0.37 Wh/m on the smoke grid, which is why
+  base runs some batteries empty there. If base shows `depleted` legs on PA,
+  or `arrival_soc` well below the "predicted arrival SoC" in llm prompts,
+  raise it with `EXTRA_ARGS="--wh-per-m <value>"` (applies to all three
+  policies).
+- **Does anyone need to charge?** Long-range batteries, short urban legs and
+  overnight home charging can mean nobody ever stops at a public charger, and
+  then all three policies look identical. Check `legs_charging_pct`; lower
+  `--soc-mean` (first-day SoC) or use more days if it's ~0.
 
 Other useful `EXTRA_ARGS`: `--soc-sd`, `--risk-mean`, `--risk-sd`,
-`--llm-concurrency` (default 16 simultaneous requests), `--sample-every`
-(raise for big populations if the sim is slow). `python charge_eval.py -h`
-lists everything.
+`--llm-concurrency` (default 16 simultaneous requests), `--verbose` (the
+sim's per-step prints; very large logs). `python charge_eval.py -h` lists
+everything.
 
 ## Troubleshooting
 
@@ -165,10 +184,9 @@ lists everything.
 | `llm_fallback` = `request_failed: ... 400` | server rejected the request; most often `tool_choice`/`enable_thinking`. For a non-Qwen3 model add `EXTRA_ARGS="--llm-thinking"`; check the vLLM log for the exact error |
 | `llm_fallback` = `invalid_decision` | model picked a station not in its list or a bad target -- inspect `llm_decision` in `trips.csv` |
 | sim: `ModuleNotFoundError: traci` / `sumo: not found` | sim venv not active or missing packages -- rerun step 1 for the sim venv |
-| `plan_status` = `infeasible` for many trips | starting SoC too low to reach any charger under the energy proxy; check `--wh-per-km` and `--soc-mean` |
-| LLM run slow | expected ~1 call per EV; check `llm_latency_s_mean`; raise `--llm-concurrency` if many EVs depart together |
+| many legs `vanished` or `unfinished` | vehicles teleported out (`--time-to-teleport 300` in the sim) or the sim hit `DAYS`; check `sumo.log`, and that `DAYS` matches the ActivityGen schedule |
+| LLM run slow | expected 1 call per EV leg; check `llm_latency_s_mean`; raise `--llm-concurrency` if many legs start together |
 
-`Scripts/traci_testing.py` is the team's separate multi-day ActivityGen sim
-(home charging, least-impact charger choice). The evaluation doesn't use it:
-`charge_eval.py` has its own single-trip runner and only borrows
-`plan_ev_route` / `force_last_charge_to_80` from `routing.py`.
+Running `traci_testing.py` directly (no `charge_policy`) behaves exactly as
+before; on the smoke scenario it produces identical charging totals to
+main's original version.
