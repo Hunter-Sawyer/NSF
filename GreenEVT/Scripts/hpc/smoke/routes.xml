@@ -1,0 +1,30 @@
+<routes>
+  <vType id="electric_vehicle" vClass="passenger">
+    <param key="has.battery.device" value="true"/>
+    <param key="device.battery.capacity" value="600"/>
+  </vType>
+  <trip id="ev0" type="electric_vehicle" depart="0" from="A0A1" to="D4E4" departLane="best"/>
+  <trip id="ev1" type="electric_vehicle" depart="0" from="A0B0" to="D4E4" departLane="best"/>
+  <trip id="ev2" type="electric_vehicle" depart="0" from="A1A2" to="D4E4" departLane="best"/>
+  <trip id="ev3" type="electric_vehicle" depart="0" from="B0C0" to="D3D4" departLane="best"/>
+  <trip id="ev4" type="electric_vehicle" depart="0" from="A0A1" to="E3E4" departLane="best"/>
+  <trip id="ev5" type="electric_vehicle" depart="0" from="A0B0" to="D3D4" departLane="best"/>
+  <trip id="ev6" type="electric_vehicle" depart="0" from="A1A2" to="D3D4" departLane="best"/>
+  <trip id="ev7" type="electric_vehicle" depart="0" from="B0C0" to="E3E4" departLane="best"/>
+  <trip id="ev8" type="electric_vehicle" depart="20" from="A0A1" to="D4E4" departLane="best"/>
+  <trip id="ev9" type="electric_vehicle" depart="20" from="A0B0" to="E3E4" departLane="best"/>
+  <trip id="ev10" type="electric_vehicle" depart="20" from="A1A2" to="E2E3" departLane="best"/>
+  <trip id="ev11" type="electric_vehicle" depart="20" from="B0C0" to="E2E3" departLane="best"/>
+  <trip id="ev12" type="electric_vehicle" depart="20" from="A0A1" to="D3D4" departLane="best"/>
+  <trip id="ev13" type="electric_vehicle" depart="20" from="A0B0" to="E2E3" departLane="best"/>
+  <trip id="ev14" type="electric_vehicle" depart="20" from="A1A2" to="D3D4" departLane="best"/>
+  <trip id="ev15" type="electric_vehicle" depart="20" from="B0C0" to="D4E4" departLane="best"/>
+  <trip id="ev16" type="electric_vehicle" depart="40" from="A0A1" to="D4E4" departLane="best"/>
+  <trip id="ev17" type="electric_vehicle" depart="40" from="A0B0" to="D3D4" departLane="best"/>
+  <trip id="ev18" type="electric_vehicle" depart="40" from="A1A2" to="E2E3" departLane="best"/>
+  <trip id="ev19" type="electric_vehicle" depart="40" from="B0C0" to="D3D4" departLane="best"/>
+  <trip id="ev20" type="electric_vehicle" depart="40" from="A0A1" to="E2E3" departLane="best"/>
+  <trip id="ev21" type="electric_vehicle" depart="40" from="A0B0" to="E2E3" departLane="best"/>
+  <trip id="ev22" type="electric_vehicle" depart="40" from="A1A2" to="E3E4" departLane="best"/>
+  <trip id="ev23" type="electric_vehicle" depart="40" from="B0C0" to="E3E4" departLane="best"/>
+</routes>

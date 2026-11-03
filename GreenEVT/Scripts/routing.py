@@ -23,7 +23,7 @@ def _estimate_wait(status_entry, default_session_minutes=30.0):
     return (cars_ahead_of_us / stalls) * avg_session
 
 def plan_ev_route(origin, destination, initial_soc, stations_graph, vehicle_profile,
-                   real_time_status, soc_step=10, min_destination_soc=0.0):
+                   real_time_status, soc_step=10, min_destination_soc=0.0, charge_nodes=None):
 
     # NOTE: min_destination_soc defaults to 0.0 intentionally during this testing phase. 
     # This prevents tight mathematical constraints from returning unviable routes, maximizing 
@@ -103,6 +103,15 @@ def plan_ev_route(origin, destination, initial_soc, stations_graph, vehicle_prof
             compatibility; callers will usually want to pass something like
             10-15 in practice.
 
+        charge_nodes (set or None, default None): Nodes that actually host a
+            charger. When given, charging is only offered at these nodes;
+            when None, every node other than origin/destination is treated
+            as a potential charger (legacy behavior).
+
+    vehicle_profile may also carry 'charge_curve_at': callable(node, from_soc,
+    to_soc) -> minutes, used instead of 'charge_curve_func' when stations
+    differ in power.
+
     Returns:
         On success, a dict:
             {
@@ -162,6 +171,7 @@ def plan_ev_route(origin, destination, initial_soc, stations_graph, vehicle_prof
     # discretization/bucketing approximation), and O(1) per check.
     best_soc_seen = {}
     charge_curve = vehicle_profile['charge_curve_func']
+    charge_curve_at = vehicle_profile.get('charge_curve_at')
 
     while pq:
         total_time, _, curr_node, curr_soc, path = heapq.heappop(pq)
@@ -178,6 +188,8 @@ def plan_ev_route(origin, destination, initial_soc, stations_graph, vehicle_prof
 
         # --- ACTION 1: CHARGE (Vertical Expansion) ---
         is_station = curr_node != origin and curr_node != destination
+        if charge_nodes is not None:
+            is_station = is_station and curr_node in charge_nodes
         if is_station:
             queue_wait = _estimate_wait(real_time_status.get(curr_node))
             start_target = int((curr_soc // soc_step) + 1) * soc_step
@@ -189,7 +201,10 @@ def plan_ev_route(origin, destination, initial_soc, stations_graph, vehicle_prof
                 if target_soc <= curr_soc:
                     continue
 
-                charge_time = charge_curve(curr_soc, target_soc)
+                if charge_curve_at is not None:
+                    charge_time = charge_curve_at(curr_node, curr_soc, target_soc)
+                else:
+                    charge_time = charge_curve(curr_soc, target_soc)
                 edge_cost = queue_wait + charge_time
 
                 wait_text = f"after waiting {queue_wait}m" if queue_wait > 0 else "immediately"
@@ -259,7 +274,9 @@ def recompute_total_time_from_path(path, vehicle_profile, real_time_status):
 
     return total_time
 
-def force_last_charge_to_80(result):
+def force_last_charge_to_80(result, floor=80):
+    # Raises (never lowers) the last charge target to `floor`; lowering it below
+    # what the planner chose could leave the car short of the destination.
     if result is None:
         return None
 
@@ -276,9 +293,9 @@ def force_last_charge_to_80(result):
         return result
 
     node, action, soc = path[last_charge_idx]
-    if soc != 80:
-        wait_part = "_after waiting " if "_after waiting " in action else "_immediately"
-        path[last_charge_idx] = (node, f"charge_to_80%{wait_part}", 80)
+    if soc < floor:
+        wait_part = action.split("%", 1)[1]
+        path[last_charge_idx] = (node, f"charge_to_{floor}%{wait_part}", floor)
 
     result = dict(result)
     result["path"] = path
