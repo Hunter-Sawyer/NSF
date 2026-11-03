@@ -1,8 +1,9 @@
 #!/bin/bash
 # Sourced at the start of every model-serving job: source setup_env.sh
-# Set WORK once to the project root on the HPC (the folder that holds GreenEVT/).
+# Set WORK once: a folder under your group storage, e.g. /work/projects/<account>/<username>
+# (group folders are listed in the message shown at login; home is too small).
 
-WORK=${WORK:-<path_to_project_root>}
+WORK=${WORK:-<path_to_work_folder>}
 VENV=$WORK/llm_venv
 
 export HF_HOME=$WORK/hf_cache

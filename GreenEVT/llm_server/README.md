@@ -1,6 +1,7 @@
 # LLM server (HPC)
 
 GPU side of the charge decision evaluation: serves Qwen3-14B-AWQ with vLLM
+on one 40 GB A100 (`batch-warp`, routed to gpunode003-012)
 for `Scripts/charge_eval.py --policies llm`. The sim runs as a separate CPU
 job from `Scripts/hpc/`.
 

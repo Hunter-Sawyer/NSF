@@ -12,8 +12,8 @@ on the same SUMO scenario and the same vehicle population:
 Two separate SLURM jobs:
 
 ```
-llm_server/serve_model.slurm      GPU job (A100, gpunode[003-010]) -- vLLM, Qwen3-14B-AWQ
-Scripts/hpc/run_charge_eval.slurm CPU job -- SUMO + charge_eval.py, runs base, risk, llm in turn
+llm_server/serve_model.slurm      GPU job (batch-warp, 1x 40 GB A100) -- vLLM, Qwen3-14B-AWQ
+Scripts/hpc/run_charge_eval.slurm CPU job (batch-warp) -- SUMO + charge_eval.py, runs base, risk, llm in turn
 ```
 
 They find each other through `$WORK/vllm_endpoints/<jobid>.json`
@@ -34,35 +34,61 @@ appear, so both can be submitted back to back.
 
 ## 1. One-time setup
 
+**Find your account and storage folder.** Both are printed at the bottom of
+the message shown when you log in to `login.hpc.tntech.edu`:
+
+```
+Job submission accounts you have access to:
+ <account> ...
+Group storage folders you have access to:
+ /work/projects/<account> ...
+```
+
+(`sacctmgr show association format=account%20,user%20` also lists accounts.)
+Use the account for this NSF project; if there are several and it's unclear
+which, ask the PI. Home directories are very small, so `WORK` should be a
+folder in the group storage, e.g. `/work/projects/<account>/<username>`. It
+holds the venvs, the model download (~10 GB), endpoint files and results --
+budget ~30 GB.
+
 Edit placeholders:
-- `WORK=<path_to_project_root>` in **both** `llm_server/setup_env.sh` and
+- `WORK=<path_to_work_folder>` in **both** `llm_server/setup_env.sh` and
   `Scripts/hpc/setup_sim_env.sh` -- must be identical (shared endpoint folder).
-  This is where venvs, HF cache, endpoint files and results live.
 - `--account=<account_name>` in **both** `.slurm` files.
 
-Then from an interactive session (login node is too small). Use plain pip,
-don't `spack load`:
+**Build the two venvs** from an interactive session (the login node can't be
+used for this). `hpcshell` defaults to 1 CPU / 2 GB / 2 h, which is too small
+for installing vLLM, so ask for more. Python comes from Spack's
+`py-virtualenv` (RCD's documented method; gives Python 3.10, which vLLM and
+SUMO support); all packages are plain `pip`, never `spack load`:
 
 ```bash
-hpcshell --account=<account_name>
+hpcshell --account=<account_name> --cpus-per-task=8 --mem=32G --time=03:00:00
 cd <repo>/GreenEVT
+mkdir -p $WORK    # if it doesn't exist yet; same path as in the setup scripts
+spack load py-virtualenv
 
-# model venv (Python 3.10-3.12 for vLLM)
-python3.12 -m venv $WORK/llm_venv
+# model venv
+virtualenv $WORK/llm_venv
 source llm_server/setup_env.sh
 pip install -r llm_server/requirements.txt
 deactivate
 
 # sim venv
-python3.12 -m venv $WORK/sim_venv
+virtualenv $WORK/sim_venv
 source Scripts/hpc/setup_sim_env.sh
 pip install -r Scripts/hpc/requirements.txt
 sumo --version     # should print Eclipse SUMO 1.27.1
+deactivate
+
+# pre-download the model (also confirms the node has internet access)
+source llm_server/setup_env.sh
+huggingface-cli download Qwen/Qwen3-14B-AWQ
 ```
 
-Optional: pre-download the model so the first job doesn't spend its time on it
-(with `llm_server/setup_env.sh` sourced):
-`huggingface-cli download Qwen/Qwen3-14B-AWQ`
+If `virtualenv` reports an old Python (< 3.10) or the download hangs (no
+internet from compute nodes), stop and open an HPC Issues ticket / RCD
+booking -- the rest of the setup depends on both.
 
 ## 2. Smoke test (does it work?)
 
@@ -132,7 +158,9 @@ lists everything.
 | symptom | likely cause / fix |
 |---|---|
 | sim: `No model endpoint came up` | model job not running or crashed -- check `squeue` and the vLLM log; `WORK` differs between the two setup scripts |
-| vLLM log: CUDA / out-of-memory at startup | lower `--gpu-memory-utilization` or `--max-model-len` in `serve_model.slurm`; confirm the job landed on gpunode003-010 |
+| vLLM log: CUDA / out-of-memory at startup | lower `--gpu-memory-utilization` or `--max-model-len` in `serve_model.slurm` (the A100s are 40 GB); `squeue` should show the job on a gpunode003-012 |
+| sim log: endpoint found but requests time out | the sim node can't reach the GPU node's port -- both jobs must be on `batch-warp`; if they are, ask RCD whether node-to-node traffic on high ports is allowed |
+| job pending a long time | check `squeue -u $USER` REASON; `batch-warp` is low priority under fair share, so waits are normal when the cluster is busy |
 | vLLM log: driver/CUDA version error | install a vLLM/torch build matching the node's driver (pin `vllm==<ver>` in `llm_server/requirements.txt`) |
 | `llm_fallback` = `request_failed: ... 400` | server rejected the request; most often `tool_choice`/`enable_thinking`. For a non-Qwen3 model add `EXTRA_ARGS="--llm-thinking"`; check the vLLM log for the exact error |
 | `llm_fallback` = `invalid_decision` | model picked a station not in its list or a bad target -- inspect `llm_decision` in `trips.csv` |

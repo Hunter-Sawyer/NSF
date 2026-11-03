@@ -1,6 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=charge-eval-sim
 #SBATCH --account=<account_name>
+# Same cluster (Warp) as the model job's GPU nodes, so it can reach their vLLM port.
+#SBATCH --partition=batch-warp
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4

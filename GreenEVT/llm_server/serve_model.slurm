@@ -1,8 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=charge-llm-vllm
 #SBATCH --account=<account_name>
-#SBATCH --nodelist=gpunode[003-010]
-#SBATCH --gres=gpu:1
+# A GPU request on batch-warp is routed to gpu-warp: gpunode[003-012], 40 GB A100s.
+#SBATCH --partition=batch-warp
+#SBATCH --gpus=a100:1
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8

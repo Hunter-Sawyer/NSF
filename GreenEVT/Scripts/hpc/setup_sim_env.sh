@@ -2,7 +2,7 @@
 # Sourced at the start of every sim job: source setup_sim_env.sh
 # WORK must match llm_server/setup_env.sh so both sides share LLM_ENDPOINT_DIR.
 
-WORK=${WORK:-<path_to_project_root>}
+WORK=${WORK:-<path_to_work_folder>}
 VENV=$WORK/sim_venv
 
 export PIP_CACHE_DIR=$WORK/pip_cache
