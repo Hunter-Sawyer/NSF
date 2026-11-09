@@ -12,13 +12,17 @@ traci_testing.choose_least_impact_charger makes by default:
     llm   -- an LLM (vLLM on the HPC) sees the leg and the same charger
              candidates and makes the call
 
-Interface used by the sim: ``choose(ctx)`` runs on the main thread (it may
-call TraCI) and returns a zero-argument ``finish`` callable giving
-``(choice, info)``; ``choice`` is None (drive on) or a dict with
+Every policy decides only from a decision state (traci_testing.decision_state:
+SoC, time, destination, and each charger's routes, energy, power and
+occupancy), never from the live sim. The same code therefore runs during a
+simulation and in replay_decisions.py on states logged by any earlier run,
+so all methods can be compared on the identical sequence of states.
+
+Interface: ``choose(state)`` returns a zero-argument ``finish`` callable
+giving ``(choice, info)``; ``choice`` is None (drive on) or a dict with
 ``station``, ``edge``, ``target_charge`` (Wh), ``added_time``,
-``added_distance``, and ``info`` is logged with the leg. ``resolve(finishers)``
-runs the finishers -- concurrently for the LLM, which never touches TraCI
-from a worker thread.
+``added_distance``, and ``info`` is logged with the decision.
+``resolve(finishers)`` runs the finishers -- concurrently for the LLM.
 """
 import hashlib
 import json
@@ -29,27 +33,47 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-import traci
 
-import traci_testing
+def least_impact_from_state(state, reserve_soc, charge_target_soc):
+    """traci_testing.choose_least_impact_charger, computed from a decision state.
 
+    Same arithmetic in the same order as the team's function, so given the
+    same measurements it returns the same charger and target.
+    """
+    baseline = state["baseline"]
+    if baseline is None:
+        return None
+    charge, capacity = state["current_charge"], state["capacity"]
+    wh_per_m = state["estimated_consumption_wh_per_meter"]
+    reserve_energy = capacity * reserve_soc
+    required_energy = baseline["distance"] * wh_per_m + reserve_energy
+    if charge >= required_energy:
+        return None
 
-def _least_impact(ctx, reserve_soc, charge_target_soc):
-    choice = traci_testing.choose_least_impact_charger(
-        ctx["vehicle_id"], ctx["destination_edge"], ctx["current_charge"],
-        ctx["capacity"], ctx["charging_stations"],
-        reserve_soc=reserve_soc,
-        estimated_consumption_wh_per_meter=ctx["estimated_consumption_wh_per_meter"],
-        charge_target_soc=charge_target_soc,
-    )
-    return choice
+    best = None
+    for station in state["stations"]:
+        if charge < station["distance_to_station"] * wh_per_m + reserve_energy:
+            continue
+        candidate_distance = station["distance_to_station"] + station["from_length"]
+        candidate_time = station["to_travel_time"] + station["from_travel_time"]
+        added_distance = max(0.0, candidate_distance - baseline["distance"])
+        added_time = max(0.0, candidate_time - baseline["travel_time"])
+        target_charge = max(capacity * charge_target_soc,
+                            station["from_length"] * wh_per_m + reserve_energy)
+        target_charge = min(capacity, target_charge)
+        score = (added_time, added_distance, candidate_time, station["station"])
+        if best is None or score < best["score"]:
+            best = {"station": station["station"], "edge": station["edge"],
+                    "added_time": added_time, "added_distance": added_distance,
+                    "target_charge": target_charge, "score": score}
+    return best
 
 
 class BasePolicy:
     name = "base"
 
-    def choose(self, ctx):
-        choice = _least_impact(ctx, ctx["reserve_soc"], ctx["charge_target_soc"])
+    def choose(self, state):
+        choice = least_impact_from_state(state, state["reserve_soc"], state["charge_target_soc"])
         return lambda: (choice, {})
 
 
@@ -75,11 +99,11 @@ class RiskPolicy:
             self.riskiness[household] = min(1.0, max(0.0, rng.gauss(self.mean, self.sd)))
         return self.riskiness[household]
 
-    def choose(self, ctx):
-        r = self._riskiness(ctx["household"])
+    def choose(self, state):
+        r = self._riskiness(state["household"])
         reserve = self.reserve_cautious + r * (self.reserve_risky - self.reserve_cautious)
         target = self.target_cautious + r * (self.target_risky - self.target_cautious)
-        choice = _least_impact(ctx, reserve, target)
+        choice = least_impact_from_state(state, reserve, target)
         info = {"riskiness": round(r, 3), "reserve_soc": round(reserve, 3),
                 "charge_target_soc": round(target, 3)}
         return lambda: (choice, info)
@@ -148,7 +172,6 @@ class LLMPolicy:
             with open(cache_path) as f:
                 self.cache = json.load(f)
         self.pool = ThreadPoolExecutor(concurrency)
-        self.station_power_w = {}
 
     def _http(self, path, payload=None):
         req = urllib.request.Request(
@@ -178,44 +201,45 @@ class LLMPolicy:
             return [finish() for finish in finishers]
         return list(self.pool.map(lambda finish: finish(), finishers))
 
-    def _power_w(self, station_id):
-        if station_id not in self.station_power_w:
-            try:
-                self.station_power_w[station_id] = traci.chargingstation.getChargingPower(station_id)
-            except (AttributeError, traci.TraCIException):
-                self.station_power_w[station_id] = 22000.0
-        return self.station_power_w[station_id]
-
-    def choose(self, ctx):
-        # TraCI work happens here on the main thread; finish() only does HTTP.
-        cap, charge = ctx["capacity"], ctx["current_charge"]
-        wh_per_m = ctx["estimated_consumption_wh_per_meter"]
-        options = traci_testing.charger_candidates(
-            ctx["vehicle_id"], ctx["destination_edge"], charge, cap, ctx["charging_stations"],
-            reserve_soc=0.0, estimated_consumption_wh_per_meter=wh_per_m)
-        if options is None:
+    def choose(self, state):
+        cap, charge = state["capacity"], state["current_charge"]
+        wh_per_m = state["estimated_consumption_wh_per_meter"]
+        baseline = state["baseline"]
+        if baseline is None:
             return lambda: (None, {"llm_fallback": "no_route"})
-        fallback = _least_impact(ctx, ctx["reserve_soc"], ctx["charge_target_soc"])
+        fallback = least_impact_from_state(state, state["reserve_soc"], state["charge_target_soc"])
+
+        # Chargers the car can reach at all (no reserve), nearest detour first.
+        cands = []
+        for st in state["stations"]:
+            if charge < st["distance_to_station"] * wh_per_m:
+                continue
+            cands.append(dict(st, added_time=max(
+                0.0, st["to_travel_time"] + st["from_travel_time"] - baseline["travel_time"]),
+                added_distance=max(
+                0.0, st["distance_to_station"] + st["from_length"] - baseline["distance"])))
+        cands = sorted(cands, key=lambda c: c["added_time"])[:self.max_candidates]
 
         pct = lambda wh: wh / cap * 100.0
-        cands = sorted(options["candidates"], key=lambda c: c["added_time"])[:self.max_candidates]
         lines = []
         for c in cands:
-            power = self._power_w(c["station"])
+            power = c["power_w"] or 22000.0
             lines.append(STATION_LINE.format(
                 sid=c["station"], detour=c["added_time"] / 60.0,
-                arr=pct(charge - c["energy_to_station"]), after=pct(c["energy_from_station"]),
+                arr=pct(charge - c["distance_to_station"] * wh_per_m),
+                after=pct(c["from_length"] * wh_per_m),
                 kw=power / 1000.0, rate=cap * 0.1 / (power * 0.95) * 60.0,
-                occ=traci.chargingstation.getVehicleCount(c["station"])))
-        t = int(ctx["current_time"])
+                occ=c["vehicles_at_station"]))
+        t = int(state["current_time"])
+        baseline_energy = baseline["distance"] * wh_per_m
         user = USER_TEMPLATE.format(
             clock=f"day {t // 86400 + 1}, {t % 86400 // 3600:02d}:{t % 3600 // 60:02d}",
             soc=pct(charge), cap_kwh=cap / 1000.0,
             destination=(f"at home, where you can charge overnight at "
-                         f"{ctx['home_charge_power_w'] / 1000:.1f} kW" if ctx["is_home_return"]
+                         f"{state['home_charge_power_w'] / 1000:.1f} kW" if state["is_home_return"]
                          else "away from home (no home charger there)"),
-            direct_min=options["baseline_time"] / 60.0, direct_pct=pct(options["baseline_energy"]),
-            direct_arrival=pct(charge - options["baseline_energy"]),
+            direct_min=baseline["travel_time"] / 60.0, direct_pct=pct(baseline_energy),
+            direct_arrival=pct(charge - baseline_energy),
             stations="\n".join(lines) or "  (none reachable)")
         messages = [{"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user}]
@@ -245,7 +269,8 @@ class LLMPolicy:
         if key in self.cache:
             return self.cache[key], 0.0, True
         payload = {
-            "model": self.model, "messages": messages, "temperature": 0,
+            # Greedy decoding plus a fixed seed; see CHARGE_EVAL.md on determinism.
+            "model": self.model, "messages": messages, "temperature": 0, "seed": 0,
             "max_tokens": 512, "tools": [CHARGE_TOOL],
             "tool_choice": {"type": "function", "function": {"name": "charge_decision"}},
         }

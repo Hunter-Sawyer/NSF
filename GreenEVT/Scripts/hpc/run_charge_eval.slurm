@@ -19,6 +19,9 @@
 set -euo pipefail
 
 source "$SLURM_SUBMIT_DIR/setup_sim_env.sh"
+# Fixed hash seed: Python's set/dict ordering of string IDs is then the same in
+# every run (the sim also sorts vehicle IDs; this is belt and braces).
+export PYTHONHASHSEED=0
 cd "$SLURM_SUBMIT_DIR/.."   # GreenEVT/Scripts, where charge_eval.py lives
 
 NET=${NET:?set NET to the PA .net.xml}

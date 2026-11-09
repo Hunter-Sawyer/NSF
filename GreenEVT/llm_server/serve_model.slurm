@@ -30,6 +30,11 @@ mkdir -p "$LLM_ENDPOINT_DIR"
 QUANT_ARGS=()
 [[ "$MODEL" == *AWQ* ]] && QUANT_ARGS=(--quantization awq)
 
+# DETERMINISTIC=1 turns off prefix caching, whose reuse of cached attention
+# state can change outputs at the floating-point level between runs.
+CACHE_ARGS=(--enable-prefix-caching)
+[[ "${DETERMINISTIC:-0}" == 1 ]] && CACHE_ARGS=(--no-enable-prefix-caching)
+
 # Parser for free-form ("auto") tool calls. The client forces a named tool
 # call, which vLLM serves with guided decoding regardless of the parser.
 case "$MODEL" in
@@ -50,7 +55,7 @@ vllm serve "$MODEL" \
     ${QUANT_ARGS[@]+"${QUANT_ARGS[@]}"} \
     --enable-auto-tool-choice \
     --tool-call-parser "$TOOL_PARSER" \
-    --enable-prefix-caching \
+    "${CACHE_ARGS[@]}" \
     --max-model-len 8192 \
     --gpu-memory-utilization 0.9 \
     --port "$PORT" \

@@ -42,10 +42,11 @@ appear, so both can be submitted back to back.
 
 | file | purpose |
 |---|---|
-| `Scripts/traci_testing.py` | the team's multi-day sim; takes an optional `charge_policy` and `trip_log` (default behavior unchanged) |
+| `Scripts/traci_testing.py` | the team's multi-day sim; takes an optional `charge_policy` plus decision / leg / demand logs (default behavior unchanged) |
 | `Scripts/charge_eval.py` | runs the sim once per policy, writes per-leg `trips.csv` and a side-by-side `summary.csv` |
 | `Scripts/charge_policies.py` | the three policies + LLM client (stdlib HTTP only) |
 | `Scripts/combine_summaries.py` | merges `summary.csv` from several sim jobs into one table |
+| `Scripts/replay_decisions.py`, `Scripts/hpc/run_replay.slurm` | replays logged decision states through any policies/models (section 4) |
 | `Scripts/hpc/setup_sim_env.sh`, `requirements.txt` | sim venv (SUMO from the `eclipse-sumo` wheel) |
 | `Scripts/hpc/smoke/` | tiny 5x5 grid, 12 households commuting for 2 days, for checking the pipeline works |
 | `llm_server/setup_env.sh`, `requirements.txt` | model venv (vLLM) |
@@ -151,15 +152,24 @@ Paths in `NET`/`ROUTES`/`CHARGERS` are relative to `GreenEVT/Scripts`
 - `llm_latency_s_mean` is a number, not `nan`
 
 Results: `$WORK/charge_eval_out/seed_42_<jobid>/` -- `summary.csv`, and per
-policy `trips.csv` (one row per EV leg: start/arrival/min SoC, charger and
-target, charge and queue time; for risk the household's riskiness; for llm the
-prompt and the model's decision), `charging_totals.csv` (public energy per
-station and home energy), and `sumo.log`.
+policy folder:
 
-For reference, a local run of this exact smoke test against a stub model gave
-base / risk / llm `legs_charging_pct` of 12.5 / 12.5 / 20.8 and `depleted` of
-2 / 2 / 0; base and risk should match that on the HPC (same seed), llm will
-differ with the real model. SUMO's `Warning: Battery of vehicle ... is
+| file | contents |
+|---|---|
+| `trips.csv` | one row per EV leg: start/arrival/min SoC, charger and target, charge and queue time; for risk the household's riskiness; for llm the prompt and the model's decision |
+| `decisions.jsonl` | the full state at every decision (SoC, capacity, time, destination, home-return, energy estimate, and every charger's routes, energy, power and occupancy) plus the choice -- input for replay (section 4) |
+| `station_demand.csv` | public charging energy per station per minute (`--demand-bin-s`) |
+| `home_sessions.csv` | home charging sessions: start (arrival home), end at the home charger's rate, energy |
+| `home_pending.csv` | households home at the end of the sim that never left again (their overnight charge never happens in the sim) |
+| `charging_totals.csv`, `sumo.log` | the sim's own totals and SUMO's log |
+
+The last three are what a comparison with the city's real charge demand
+curves will be built on.
+
+For reference, a local run of this exact smoke test gave base / risk
+`legs_charging_pct` of 14.58 / 14.58, `depleted` of 3 / 3, and `public_kwh`
+of 4.927 / 3.04. Base and risk must match that exactly on the HPC (same seed,
+fully deterministic); llm numbers depend on the model. SUMO's `Warning: Battery of vehicle ... is
 depleted` lines in the log correspond to the `depleted` count.
 
 A `Could not connect to TraCI server ... Retrying` line at the start of each
@@ -171,7 +181,7 @@ Use the same ActivityGen route file (and tracker, if any) the team runs
 `traci_testing.py` with, and the number of days it was generated for:
 
 ```bash
-PA="NET=<PA.net.xml>,ROUTES=<activitygen .rou.xml>,TRACKER=<tracker.xml>,DAYS=5,SEED=42"
+PA="NET=<PA.net.xml>,ROUTES=<activitygen .rou.xml>,TRACKER=<tracker.xml>,DAYS=<days>,SEED=42"
 MODELS="Qwen/Qwen3-4B Qwen/Qwen3-8B meta-llama/Llama-3.2-1B-Instruct meta-llama/Llama-3.2-3B-Instruct meta-llama/Llama-3.1-8B-Instruct"
 
 # one GPU job per model
@@ -195,7 +205,11 @@ are scarce, the model jobs can also run one or two at a time -- a sim job just
 waits for its model. Alternatively, one sim job can run several models in
 turn: `LLM_MODELS="<id> <id>"` (all those model jobs must be up).
 
+- `DAYS` must match the schedule: e.g. the 10k-population `6_179_rou.xml`
+  covers one day (departures end around 18:15), so `DAYS=1`.
 - `CHARGERS` defaults to `./chargers_additional.xml` (in `Scripts/`).
+- The tracker writes to `../outputs/<name>_traffic.xml` relative to its own
+  folder, so keep it in a `trackers/` folder next to an `outputs/` folder.
 - EVs are the vType `electric_vehicle` with the battery device params, and
   trip IDs follow ActivityGen's `<household>:<trip number>` form -- the sim
   uses them to carry battery state and detect return-home legs.
@@ -215,9 +229,62 @@ Calibrate after the first run:
   `--soc-mean` (first-day SoC) or use more days if it's ~0.
 
 Other useful `EXTRA_ARGS`: `--soc-sd`, `--risk-mean`, `--risk-sd`,
-`--llm-concurrency` (default 16 simultaneous requests), `--verbose` (the
-sim's per-step prints; very large logs). `python charge_eval.py -h` lists
-everything.
+`--llm-concurrency` (default 16 simultaneous requests), `--deterministic`,
+`--verbose` (the sim's per-step prints; very large logs).
+`python charge_eval.py -h` lists everything.
+
+## 4. Comparing methods on identical states (replay)
+
+Each closed-loop run above diverges from the others as soon as two methods
+decide differently (different charging -> different SoC and traffic later).
+To compare *decisions* like for like, replay one run's logged states through
+every method: no SUMO, just each policy/model deciding on exactly the same
+sequence of states.
+
+```bash
+cd <repo>/GreenEVT/Scripts/hpc
+# e.g. every method on the states base encountered (model jobs must be up)
+sbatch --export=ALL,STATES=$WORK/charge_eval_out/seed_42_<base job>/base,LLM_MODELS="$MODELS" run_replay.slurm
+```
+
+Output: `replay_<job>.csv` next to the states, one row per state with SoC,
+time, home-return, direct-route arrival SoC, the logged choice, and each
+method's charge / station / target side by side. The log prints each
+method's charge rate and pairwise agreement on charge / don't charge, and
+`matches_logged` for the run's own method, which must be 1.000 (replay
+reproduces the run exactly). Replays of base and risk need no model job and
+finish in seconds. Any run's states can be used (`.../risk`,
+`.../llm-qwen3-8b`, ...), and `STATES` may list several.
+
+## 5. Determinism
+
+Everything that could vary between runs is fixed, so reruns with the same
+inputs and `SEED` give identical files:
+- first-day battery levels and riskiness are seeded per household; SUMO gets
+  `--seed` and `--threads 1`;
+- vehicles are handled in sorted ID order each step, and the sim job sets
+  `PYTHONHASHSEED=0`;
+- decision states are routed with a copy of the EV type that has no speed
+  deviation. (SUMO's `findRoute` otherwise draws a random speed factor for a
+  throwaway vehicle, which shifts every later vehicle's random draws -- a
+  method that routes more would change traffic for reasons unrelated to its
+  decisions.) Travel times are unaffected; the team's default path still
+  routes as before.
+
+Checked locally: rerunning under different Python hash seeds gives identical
+outputs; doubling the routing queries per decision leaves the sim unchanged;
+on the same state, the state-based base makes the same choice as
+`choose_least_impact_charger` every time.
+
+The LLM is the one part that can still vary: decoding is greedy
+(temperature 0, fixed request seed), but GPU arithmetic can differ slightly
+depending on which requests share a batch and on prefix caching. For runs
+that must be reproducible, use `DETERMINISTIC=1` on the model job (no prefix
+caching), `EXTRA_ARGS="--deterministic"` on the sim/replay job (one request
+at a time), and give each model job only one sim job at a time. Every
+response is also cached in `llm_cache.json` in the run folder, so the
+decisions a run actually made are always on record and replays against that
+folder's cache are exact.
 
 ## Troubleshooting
 

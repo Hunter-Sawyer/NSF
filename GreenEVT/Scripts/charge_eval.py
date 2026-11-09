@@ -20,6 +20,7 @@ main sim; only the charge decision differs.
 """
 import argparse
 import csv
+import json
 import os
 import random
 import statistics
@@ -81,7 +82,7 @@ def run_policy(policy, args, out_dir):
         soc = min(100.0, max(1.0, rng.gauss(args.soc_mean, args.soc_sd)))
         return soc / 100.0 * capacity
 
-    legs = []
+    legs, decisions, home_sessions, station_demand = [], [], [], {}
     try:
         totals = traci_testing.run_traci_simulation(
             tracker_file=args.tracker,
@@ -94,6 +95,10 @@ def run_policy(policy, args, out_dir):
             charge_policy=policy,
             initial_charge_fn=initial_charge,
             trip_log=legs,
+            decision_log=decisions,
+            home_sessions=home_sessions,
+            station_demand=station_demand,
+            demand_bin_s=args.demand_bin_s,
             sumo_seed=args.seed,
             sumo_log=os.path.join(out_dir, "sumo.log"),
             verbose=args.verbose,
@@ -110,6 +115,21 @@ def run_policy(policy, args, out_dir):
         leg["charged_kwh"] = round(leg["charged_kwh"], 4)
         leg["depleted"] = leg["min_soc"] <= args.depleted_soc
     write_csv(os.path.join(out_dir, "trips.csv"), legs)
+    # Full state + choice of every decision: replay_decisions.py feeds these
+    # states to any other policy/model.
+    with open(os.path.join(out_dir, "decisions.jsonl"), "w") as f:
+        for i, record in enumerate(decisions):
+            f.write(json.dumps({"decision_id": i, "policy": policy.name, **record},
+                               sort_keys=True) + "\n")
+    # Charging demand over time, for comparison with the city's real demand.
+    write_csv(os.path.join(out_dir, "station_demand.csv"), [
+        {"bin_start_s": t, "bin_s": args.demand_bin_s, "station": station, "energy_wh": round(wh, 3)}
+        for (t, station), wh in sorted(station_demand.items())] or
+        [{"bin_start_s": "", "bin_s": args.demand_bin_s, "station": "", "energy_wh": ""}])
+    write_csv(os.path.join(out_dir, "home_sessions.csv"), home_sessions or
+              [{"household": "", "start_s": "", "end_s": "", "energy_wh": "", "power_w": ""}])
+    write_csv(os.path.join(out_dir, "home_pending.csv"), totals["home_pending"] or
+              [{"household": "", "arrival_s": "", "charge_wh": ""}])
     return summarize(policy.name, legs, totals, args.depleted_soc)
 
 
@@ -144,8 +164,14 @@ def main():
                    help="run the llm policy once per model (Hugging Face ids, as served); each "
                         "is matched to its endpoint file. Default: the one model the server lists")
     p.add_argument("--llm-thinking", action="store_true", help="leave Qwen3 thinking mode on")
+    p.add_argument("--demand-bin-s", type=int, default=60,
+                   help="time bin for station_demand.csv, seconds")
+    p.add_argument("--deterministic", action="store_true",
+                   help="send LLM requests one at a time (no batching effects); slower")
     p.add_argument("--verbose", action="store_true", help="keep the sim's per-step prints")
     args = p.parse_args()
+    if args.deterministic:
+        args.llm_concurrency = 1
 
     # traci_testing resolves relative paths against Scripts/; make CLI paths
     # relative to where the command was run instead.
