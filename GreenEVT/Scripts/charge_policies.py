@@ -138,6 +138,8 @@ class LLMPolicy:
         self.endpoint = endpoint.rstrip("/")
         self.timeout = timeout
         self.model = model or self._detect_model()
+        # e.g. "llm-qwen3-8b": keeps each model's results apart in one eval.
+        self.name = "llm-" + self.model.rsplit("/", 1)[-1].lower()
         self.max_candidates = max_candidates
         self.disable_thinking = disable_thinking
         self.cache_path = cache_path
@@ -261,12 +263,13 @@ class LLMPolicy:
         return decision, latency, False
 
 
-def endpoint_from_file(path, timeout=10):
+def endpoint_from_file(path, model=None, timeout=10):
     """
     Base URL from an endpoint JSON written by llm_server/serve_model.slurm
-    ({"host", "port", ...}). Given a directory, tries its *.json files newest
-    first and returns the first server that answers /v1/models -- files from
-    jobs killed without running their EXIT trap are skipped that way.
+    ({"host", "port", "model", ...}). Given a directory, tries its *.json
+    files newest first and returns the first server that answers /v1/models
+    -- files from jobs killed without running their EXIT trap are skipped
+    that way. With ``model``, only that model's servers are considered.
     """
     if os.path.isdir(path):
         files = sorted((os.path.join(path, f) for f in os.listdir(path) if f.endswith(".json")),
@@ -276,22 +279,25 @@ def endpoint_from_file(path, timeout=10):
     for f in files:
         with open(f) as fh:
             info = json.load(fh)
+        if model is not None and info.get("model") != model:
+            continue
         url = f"http://{info['host']}:{info['port']}/v1"
         try:
             urllib.request.urlopen(url + "/models", timeout=timeout).close()
             return url
         except (urllib.error.URLError, OSError):
             continue
-    raise RuntimeError(f"No reachable vLLM endpoint in {path} -- is the model job running (squeue -u $USER)?")
+    which = f"{model} endpoint" if model else "vLLM endpoint"
+    raise RuntimeError(f"No reachable {which} in {path} -- is the model job running (squeue -u $USER)?")
 
 
-def make_policy(name, args, out_dir):
+def make_policy(name, args, out_dir, model=None, endpoint=None):
     if name == "base":
         return BasePolicy()
     if name == "risk":
         return RiskPolicy(seed=args.seed, mean=args.risk_mean, sd=args.risk_sd)
     if name == "llm":
-        return LLMPolicy(endpoint=args.llm_endpoint, model=args.llm_model,
+        return LLMPolicy(endpoint=endpoint or args.llm_endpoint, model=model,
                          cache_path=os.path.join(out_dir, "llm_cache.json"),
                          disable_thinking=not args.llm_thinking,
                          concurrency=args.llm_concurrency)

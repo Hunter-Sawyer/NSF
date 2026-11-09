@@ -11,7 +11,17 @@ decision changes between policies:
 |---|---|
 | `base` | the sim's own `choose_least_impact_charger`: charge only if the leg can't be finished with a 10% reserve; pick the charger with the least added time; charge to 90% |
 | `risk` | the same rule, but each household gets a riskiness score r ~ N(0.5, 0.2) that sets its reserve (30% cautious -> 5% risky) and charge target (90% -> 50%) |
-| `llm` | Qwen3-14B-AWQ (vLLM) sees the leg -- time of day, SoC, whether it ends at home, and the same charger options -- and picks charge / station / target SoC |
+| `llm-<model>` | an LLM (served by vLLM) sees the leg -- time of day, SoC, whether it ends at home, and the same charger options -- and picks charge / station / target SoC. Run once per model (below) |
+
+Models compared (all unquantized bf16, one 40 GB A100 each):
+
+| model | Hugging Face id | results folder |
+|---|---|---|
+| Qwen3 4B | `Qwen/Qwen3-4B` | `llm-qwen3-4b` |
+| Qwen3 8B | `Qwen/Qwen3-8B` | `llm-qwen3-8b` |
+| Llama 3.2 1B | `meta-llama/Llama-3.2-1B-Instruct` | `llm-llama-3.2-1b-instruct` |
+| Llama 3.2 3B | `meta-llama/Llama-3.2-3B-Instruct` | `llm-llama-3.2-3b-instruct` |
+| Llama 3.1 8B | `meta-llama/Llama-3.1-8B-Instruct` | `llm-llama-3.1-8b-instruct` |
 
 All three get the same households, first-day battery levels (seeded per
 household) and SUMO seed.
@@ -19,12 +29,12 @@ household) and SUMO seed.
 Two separate SLURM jobs:
 
 ```
-llm_server/serve_model.slurm      GPU job (batch-warp, 1x 40 GB A100) -- vLLM, Qwen3-14B-AWQ
-Scripts/hpc/run_charge_eval.slurm CPU job (batch-warp) -- SUMO + charge_eval.py, runs base, risk, llm in turn
+llm_server/serve_model.slurm      GPU job (batch-warp, 1x 40 GB A100) -- vLLM serving one MODEL; one job per model
+Scripts/hpc/run_charge_eval.slurm CPU job (batch-warp) -- SUMO + charge_eval.py, runs base, risk and each LLM_MODELS entry in turn
 ```
 
 They find each other through `$WORK/vllm_endpoints/<jobid>.json`
-(`{"host", "port", "model"}`), which the model job writes once vLLM answers
+(`{"host", "port", "model"}`, matched by model name), which the model job writes once vLLM answers
 and deletes when it exits. The sim job waits (up to 60 min) for one to
 appear, so both can be submitted back to back.
 
@@ -35,6 +45,7 @@ appear, so both can be submitted back to back.
 | `Scripts/traci_testing.py` | the team's multi-day sim; takes an optional `charge_policy` and `trip_log` (default behavior unchanged) |
 | `Scripts/charge_eval.py` | runs the sim once per policy, writes per-leg `trips.csv` and a side-by-side `summary.csv` |
 | `Scripts/charge_policies.py` | the three policies + LLM client (stdlib HTTP only) |
+| `Scripts/combine_summaries.py` | merges `summary.csv` from several sim jobs into one table |
 | `Scripts/hpc/setup_sim_env.sh`, `requirements.txt` | sim venv (SUMO from the `eclipse-sumo` wheel) |
 | `Scripts/hpc/smoke/` | tiny 5x5 grid, 12 households commuting for 2 days, for checking the pipeline works |
 | `llm_server/setup_env.sh`, `requirements.txt` | model venv (vLLM) |
@@ -55,8 +66,8 @@ Group storage folders you have access to:
 Use the account for this NSF project; if there are several and it's unclear
 which, ask the PI. Home directories are very small, so `WORK` should be a
 folder in the group storage, e.g. `/work/projects/<account>/<username>`. It
-holds the venvs, the model download (~10 GB), endpoint files and results --
-budget ~30 GB.
+holds the venvs, the five model downloads (~65 GB in bf16), endpoint files
+and results -- budget ~100 GB.
 
 Edit placeholders:
 - `WORK=<path_to_work_folder>` in **both** `llm_server/setup_env.sh` and
@@ -88,10 +99,23 @@ pip install -r Scripts/hpc/requirements.txt
 sumo --version     # should print Eclipse SUMO 1.27.1
 deactivate
 
-# pre-download the model (also confirms the node has internet access)
+# Hugging Face login (needed for the gated Llama models; see below).
+# Run after sourcing setup_env.sh so the token is stored under $WORK/hf_cache.
 source llm_server/setup_env.sh
-huggingface-cli download Qwen/Qwen3-14B-AWQ
+huggingface-cli login
+
+# pre-download all five models (also confirms the node has internet access)
+for m in Qwen/Qwen3-4B Qwen/Qwen3-8B meta-llama/Llama-3.2-1B-Instruct \
+         meta-llama/Llama-3.2-3B-Instruct meta-llama/Llama-3.1-8B-Instruct; do
+    huggingface-cli download "$m"
+done
 ```
+
+**Llama access (one-time, before the download).** Meta's Llama repos are
+gated: on huggingface.co, sign in, open each of the three `meta-llama/...`
+model pages and accept the license (approval is usually quick but not
+instant), then create a read token under Settings -> Access Tokens and paste
+it into `huggingface-cli login`. The Qwen models need none of this.
 
 If `virtualenv` reports an old Python (< 3.10) or the download hangs (no
 internet from compute nodes), stop and open an HPC Issues ticket / RCD
@@ -101,14 +125,15 @@ booking -- the rest of the setup depends on both.
 
 Uses the bundled grid: 12 households commuting home -> work -> home for 2
 days (48 EV legs), with a deliberately tiny battery so public-charging
-decisions actually happen. Takes a few minutes once the model is up.
+decisions actually happen. Uses one model (Qwen3-4B, smallest download that
+isn't gated); takes a few minutes once the model is up.
 
 ```bash
 cd <repo>/GreenEVT/llm_server
-sbatch serve_model.slurm
+sbatch --export=ALL,MODEL=Qwen/Qwen3-4B serve_model.slurm
 
 cd ../Scripts/hpc
-sbatch --export=ALL,NET=hpc/smoke/dummy_grid.net.xml,ROUTES=hpc/smoke/routes.xml,CHARGERS=hpc/smoke/chargers.xml,DAYS=2,EXTRA_ARGS="--soc-mean 25" run_charge_eval.slurm
+sbatch --export=ALL,NET=hpc/smoke/dummy_grid.net.xml,ROUTES=hpc/smoke/routes.xml,CHARGERS=hpc/smoke/chargers.xml,DAYS=2,LLM_MODELS=Qwen/Qwen3-4B,EXTRA_ARGS="--soc-mean 25" run_charge_eval.slurm
 
 squeue -u $USER
 ```
@@ -118,10 +143,11 @@ Paths in `NET`/`ROUTES`/`CHARGERS` are relative to `GreenEVT/Scripts`
 `llm_server/`, `charge-eval-sim-<jobid>.log` in `Scripts/hpc/`.
 
 **It works if** the sim log ends with a table and `Wrote .../summary.csv`, and:
-- `ev_legs` = 48 and `completed` = 48 for all three policies
+- `ev_legs` = 48 and `completed` = 48 for `base`, `risk` and `llm-qwen3-4b`
 - `legs_charging_pct` > 0 for all three (charging decisions are executed)
 - `llm_fallbacks` = 0, or at least small -- fallbacks mean the model's reply
-  was unusable; the reason is in the `llm_fallback` column of `llm/trips.csv`
+  was unusable; the reason is in the `llm_fallback` column of
+  `llm-qwen3-4b/trips.csv`
 - `llm_latency_s_mean` is a number, not `nan`
 
 Results: `$WORK/charge_eval_out/seed_42_<jobid>/` -- `summary.csv`, and per
@@ -145,14 +171,35 @@ Use the same ActivityGen route file (and tracker, if any) the team runs
 `traci_testing.py` with, and the number of days it was generated for:
 
 ```bash
-sbatch --export=ALL,NET=<PA.net.xml>,ROUTES=<activitygen .rou.xml>,TRACKER=<tracker.xml>,DAYS=5,SEED=42 run_charge_eval.slurm
+PA="NET=<PA.net.xml>,ROUTES=<activitygen .rou.xml>,TRACKER=<tracker.xml>,DAYS=5,SEED=42"
+MODELS="Qwen/Qwen3-4B Qwen/Qwen3-8B meta-llama/Llama-3.2-1B-Instruct meta-llama/Llama-3.2-3B-Instruct meta-llama/Llama-3.1-8B-Instruct"
+
+# one GPU job per model
+cd <repo>/GreenEVT/llm_server
+for m in $MODELS; do sbatch --export=ALL,MODEL=$m serve_model.slurm; done
+
+# base + risk once (no model needed), then one sim job per model, all in parallel
+cd ../Scripts/hpc
+sbatch --export=ALL,$PA,POLICIES="base risk" run_charge_eval.slurm
+for m in $MODELS; do sbatch --export=ALL,$PA,POLICIES=llm,LLM_MODELS=$m run_charge_eval.slurm; done
+
+# when all sim jobs are done: one table with base, risk and all five models
+source setup_sim_env.sh && cd ..
+python combine_summaries.py $WORK/charge_eval_out/seed_42_* --out $WORK/charge_eval_out/combined_seed_42.csv
 ```
+
+Each sim job waits (up to 60 min, `LLM_WAIT_MINUTES`) for its model's server,
+so submit everything at once. Every job uses the same seed, so base and risk
+only need to run once, and each model sees the identical population. If GPUs
+are scarce, the model jobs can also run one or two at a time -- a sim job just
+waits for its model. Alternatively, one sim job can run several models in
+turn: `LLM_MODELS="<id> <id>"` (all those model jobs must be up).
 
 - `CHARGERS` defaults to `./chargers_additional.xml` (in `Scripts/`).
 - EVs are the vType `electric_vehicle` with the battery device params, and
   trip IDs follow ActivityGen's `<household>:<trip number>` form -- the sim
   uses them to carry battery state and detect return-home legs.
-- Several seeds can run as parallel sim jobs against one model job.
+- Several seeds can run as parallel sim jobs against the same model jobs.
 - `POLICIES="base risk"` runs without the model job at all.
 
 Calibrate after the first run:
@@ -181,7 +228,9 @@ everything.
 | sim log: endpoint found but requests time out | the sim node can't reach the GPU node's port -- both jobs must be on `batch-warp`; if they are, ask RCD whether node-to-node traffic on high ports is allowed |
 | job pending a long time | check `squeue -u $USER` REASON; `batch-warp` is low priority under fair share, so waits are normal when the cluster is busy |
 | vLLM log: driver/CUDA version error | install a vLLM/torch build matching the node's driver (pin `vllm==<ver>` in `llm_server/requirements.txt`) |
-| `llm_fallback` = `request_failed: ... 400` | server rejected the request; most often `tool_choice`/`enable_thinking`. For a non-Qwen3 model add `EXTRA_ARGS="--llm-thinking"`; check the vLLM log for the exact error |
+| vLLM log / download: `401`, `403`, `GatedRepoError` | Llama license not accepted for that repo, or no `huggingface-cli login` -- see "Llama access" in step 1 |
+| `llm_fallback` = `request_failed: ... 400` | server rejected the request; check the vLLM log for the exact error. If it mentions `enable_thinking`/`chat_template_kwargs`, add `EXTRA_ARGS="--llm-thinking"` for that model's sim job |
+| RCD email: low GPU utilization | expected for the 1B/3B models (they can't fill an A100); harmless unless it says the GPU was unused |
 | `llm_fallback` = `invalid_decision` | model picked a station not in its list or a bad target -- inspect `llm_decision` in `trips.csv` |
 | sim: `ModuleNotFoundError: traci` / `sumo: not found` | sim venv not active or missing packages -- rerun step 1 for the sim venv |
 | many legs `vanished` or `unfinished` | vehicles teleported out (`--time-to-teleport 300` in the sim) or the sim hit `DAYS`; check `sumo.log`, and that `DAYS` matches the ActivityGen schedule |

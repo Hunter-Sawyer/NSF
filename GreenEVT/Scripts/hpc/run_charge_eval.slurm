@@ -13,6 +13,8 @@
 # CPU-only sim job; the model runs in its own GPU job (llm_server/serve_model.slurm).
 # Submit from this folder, overriding any of the variables below, e.g.:
 #   sbatch --export=ALL,NET=/path/PA.net.xml,ROUTES=/path/activitygen.rou.xml,DAYS=5,SEED=7 run_charge_eval.slurm
+# One model per sim job (runs in parallel with the others):
+#   sbatch --export=ALL,...,POLICIES=llm,LLM_MODELS=Qwen/Qwen3-8B run_charge_eval.slurm
 
 set -euo pipefail
 
@@ -25,18 +27,22 @@ DAYS=${DAYS:-1}                       # must match the ActivityGen schedule
 CHARGERS=${CHARGERS:-./chargers_additional.xml}
 TRACKER=${TRACKER:-}
 POLICIES=${POLICIES:-"base risk llm"}
+LLM_MODELS=${LLM_MODELS:-}            # space-separated HF ids; empty = the one live model
 SEED=${SEED:-42}
 OUT=${OUT:-$WORK/charge_eval_out/seed_${SEED}_${SLURM_JOB_ID}}
 EXTRA_ARGS=${EXTRA_ARGS:-}            # e.g. "--soc-mean 25 --wh-per-m 0.30"
 LLM_WAIT_MINUTES=${LLM_WAIT_MINUTES:-60}
 
 if [[ " $POLICIES " == *" llm "* ]]; then
-    # The model job only writes its endpoint file once vLLM answers, so wait for one.
-    echo "Waiting up to ${LLM_WAIT_MINUTES} min for a model endpoint in $LLM_ENDPOINT_DIR"
+    # Model jobs only write their endpoint file once vLLM answers, so wait for
+    # every model this job needs (or any one, if LLM_MODELS is empty).
     deadline=$(( $(date +%s) + LLM_WAIT_MINUTES * 60 ))
-    until python -c "import charge_policies as c; c.endpoint_from_file('$LLM_ENDPOINT_DIR')" 2>/dev/null; do
-        (( $(date +%s) < deadline )) || { echo "No model endpoint came up; is serve_model.slurm queued?"; exit 1; }
-        sleep 30
+    for model in ${LLM_MODELS:-""}; do
+        echo "Waiting up to ${LLM_WAIT_MINUTES} min for ${model:-a model} endpoint in $LLM_ENDPOINT_DIR"
+        until python -c "import charge_policies as c; c.endpoint_from_file('$LLM_ENDPOINT_DIR', model='$model' or None)" 2>/dev/null; do
+            (( $(date +%s) < deadline )) || { echo "No ${model:-model} endpoint came up; is its serve_model.slurm job queued?"; exit 1; }
+            sleep 30
+        done
     done
 fi
 
@@ -45,4 +51,5 @@ python charge_eval.py \
     ${TRACKER:+--tracker "$TRACKER"} \
     --policies $POLICIES --seed "$SEED" --out "$OUT" \
     --llm-endpoint-file "$LLM_ENDPOINT_DIR" \
+    ${LLM_MODELS:+--llm-models $LLM_MODELS} \
     $EXTRA_ARGS

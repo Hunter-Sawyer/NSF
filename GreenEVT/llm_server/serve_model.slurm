@@ -12,15 +12,30 @@
 #SBATCH --output=%x-%j.log
 
 # Serves one model over an OpenAI-compatible API for Scripts/charge_eval.py.
-# Submit from this folder:  sbatch serve_model.slurm
-# Override the model with:  sbatch --export=ALL,MODEL=<hf_id> serve_model.slurm
+# Submit one job per model from this folder, e.g.:
+#   sbatch --export=ALL,MODEL=Qwen/Qwen3-8B serve_model.slurm
+# Models used in the evaluation:
+#   Qwen/Qwen3-4B  Qwen/Qwen3-8B
+#   meta-llama/Llama-3.2-1B-Instruct  meta-llama/Llama-3.2-3B-Instruct
+#   meta-llama/Llama-3.1-8B-Instruct  (Llama repos are gated: see CHARGE_EVAL.md)
 
 set -euo pipefail
 
 source "$SLURM_SUBMIT_DIR/setup_env.sh"
 
-MODEL=${MODEL:-"Qwen/Qwen3-14B-AWQ"}
+MODEL=${MODEL:?set MODEL to a Hugging Face model id, e.g. --export=ALL,MODEL=Qwen/Qwen3-8B}
 mkdir -p "$LLM_ENDPOINT_DIR"
+
+# AWQ checkpoints need the flag; the models above run unquantized (bf16).
+QUANT_ARGS=()
+[[ "$MODEL" == *AWQ* ]] && QUANT_ARGS=(--quantization awq)
+
+# Parser for free-form ("auto") tool calls. The client forces a named tool
+# call, which vLLM serves with guided decoding regardless of the parser.
+case "$MODEL" in
+    *[Ll]lama*) TOOL_PARSER=llama3_json ;;
+    *)          TOOL_PARSER=hermes ;;
+esac
 ENDPOINT_FILE="$LLM_ENDPOINT_DIR/${SLURM_JOB_ID}.json"
 
 # Pick a free port so several jobs on one node don't collide
@@ -29,14 +44,12 @@ PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.get
 export VLLM_USE_FLASHINFER_SAMPLER=0
 
 # --host 0.0.0.0 so sim jobs on other nodes can reach it.
-# The client forces a named tool call (charge_decision), which vLLM serves with
-# guided decoding; auto tool choice + hermes parser are kept for free-form use.
 # Prompts are ~500 tokens with short replies, so 8k context is plenty and leaves
 # more GPU memory for batching concurrent requests.
 vllm serve "$MODEL" \
-    --quantization awq \
+    ${QUANT_ARGS[@]+"${QUANT_ARGS[@]}"} \
     --enable-auto-tool-choice \
-    --tool-call-parser hermes \
+    --tool-call-parser "$TOOL_PARSER" \
     --enable-prefix-caching \
     --max-model-len 8192 \
     --gpu-memory-utilization 0.9 \

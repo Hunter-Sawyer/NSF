@@ -6,9 +6,11 @@ side-by-side summary.
     python charge_eval.py --net <PA.net.xml> --routes <activitygen .rou.xml> \
         --days 5 --policies base risk llm --out eval_out
 
-For llm, the model runs as its own SLURM job (see ../llm_server/). Point the
-sim at it with --llm-endpoint-file <dir or .json> (the endpoint file that job
-writes), or --llm-endpoint http://<host>:<port>/v1 directly.
+For llm, each model runs as its own SLURM job (see ../llm_server/). Point the
+sim at them with --llm-endpoint-file <dir or .json> (the endpoint files those
+jobs write) and --llm-models <hf ids>, or --llm-endpoint http://<host>:<port>/v1
+for a single server. Results from several sim jobs can be merged with
+combine_summaries.py.
 
 Every policy sees the identical population: each household's first battery
 level comes from an RNG seeded by (seed, household), SUMO gets the same
@@ -138,7 +140,9 @@ def main():
                         "of them (newest live one is used); overrides --llm-endpoint")
     p.add_argument("--llm-concurrency", type=int, default=16,
                    help="max simultaneous LLM requests (legs starting in the same step)")
-    p.add_argument("--llm-model", default=None, help="defaults to the first model the server lists")
+    p.add_argument("--llm-models", nargs="+", default=None,
+                   help="run the llm policy once per model (Hugging Face ids, as served); each "
+                        "is matched to its endpoint file. Default: the one model the server lists")
     p.add_argument("--llm-thinking", action="store_true", help="leave Qwen3 thinking mode on")
     p.add_argument("--verbose", action="store_true", help="keep the sim's per-step prints")
     args = p.parse_args()
@@ -149,25 +153,38 @@ def main():
         if getattr(args, attr):
             setattr(args, attr, os.path.abspath(getattr(args, attr)))
 
-    if args.llm_endpoint_file and "llm" in args.policies:
-        args.llm_endpoint = charge_policies.endpoint_from_file(args.llm_endpoint_file)
-        print(f"Using LLM endpoint {args.llm_endpoint}", flush=True)
+    # (policy, model, endpoint) for each run; "llm" expands to one run per model.
+    runs = []
+    for name in args.policies:
+        if name != "llm":
+            runs.append((name, None, None))
+            continue
+        for model in args.llm_models or [None]:
+            endpoint = args.llm_endpoint
+            if args.llm_endpoint_file:
+                endpoint = charge_policies.endpoint_from_file(args.llm_endpoint_file, model=model)
+            print(f"Using LLM endpoint {endpoint}" + (f" for {model}" if model else ""), flush=True)
+            runs.append((name, model, endpoint))
 
     os.makedirs(args.out, exist_ok=True)
     rows = []
-    for name in args.policies:
-        policy = charge_policies.make_policy(name, args, args.out)
-        print(f"=== running {name} ===", flush=True)
-        rows.append(run_policy(policy, args, os.path.join(args.out, name)))
+    for name, model, endpoint in runs:
+        policy = charge_policies.make_policy(name, args, args.out, model=model, endpoint=endpoint)
+        print(f"=== running {policy.name} ===", flush=True)
+        rows.append(run_policy(policy, args, os.path.join(args.out, policy.name)))
 
     write_csv(os.path.join(args.out, "summary.csv"), rows)
+    print_table(rows)
+    print(f"\nWrote {os.path.join(args.out, 'summary.csv')}")
+
+
+def print_table(rows):
     width = max(len(k) for k in rows[0])
     col = max(12, max(len(r['policy']) for r in rows) + 2)
     print("\n" + "metric".ljust(width) + "".join(r['policy'].rjust(col) for r in rows))
     for key in rows[0]:
         if key != 'policy':
             print(key.ljust(width) + "".join(str(r[key]).rjust(col) for r in rows))
-    print(f"\nWrote {os.path.join(args.out, 'summary.csv')}")
 
 
 if __name__ == "__main__":
