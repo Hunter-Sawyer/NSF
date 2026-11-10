@@ -20,6 +20,7 @@ main sim; only the charge decision differs.
 """
 import argparse
 import csv
+import gzip
 import json
 import os
 import random
@@ -29,11 +30,13 @@ import charge_policies
 import traci_testing
 
 
-def write_csv(path, rows):
-    fields = []
+def write_csv(path, rows, fields=None):
+    """Write dict rows; ``fields`` gives the header (and order) even when empty."""
+    fields = list(fields or [])
     for row in rows:
         fields += [k for k in row if k not in fields]
-    with open(path, "w", newline="") as f:
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "wt", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
@@ -83,6 +86,7 @@ def run_policy(policy, args, out_dir):
         return soc / 100.0 * capacity
 
     legs, decisions, home_sessions, station_demand = [], [], [], {}
+    charge_events, station_occupancy = [], []
     try:
         totals = traci_testing.run_traci_simulation(
             tracker_file=args.tracker,
@@ -99,6 +103,8 @@ def run_policy(policy, args, out_dir):
             home_sessions=home_sessions,
             station_demand=station_demand,
             demand_bin_s=args.demand_bin_s,
+            charge_events=charge_events,
+            station_occupancy=station_occupancy,
             sumo_seed=args.seed,
             sumo_log=os.path.join(out_dir, "sumo.log"),
             verbose=args.verbose,
@@ -121,15 +127,36 @@ def run_policy(policy, args, out_dir):
         for i, record in enumerate(decisions):
             f.write(json.dumps({"decision_id": i, "policy": policy.name, **record},
                                sort_keys=True) + "\n")
-    # Charging demand over time, for comparison with the city's real demand.
+    # Charging demand, kept at the sim's full resolution so any real-world
+    # format (per charger / port / area, kW readings or kWh per interval, any
+    # bin size or alignment) can be rebuilt later without re-running.
+    write_csv(os.path.join(out_dir, "charge_events.csv.gz"), [
+        {"time_s": t, "station": station, "vehicle_id": vehicle, "household": household,
+         "energy_wh": wh} for t, station, vehicle, household, wh in charge_events],
+        ["time_s", "station", "vehicle_id", "household", "energy_wh"])
+    write_csv(os.path.join(out_dir, "station_occupancy.csv"), station_occupancy,
+              ["time_s", "station", "vehicles", "vehicle_ids"])
     write_csv(os.path.join(out_dir, "station_demand.csv"), [
-        {"bin_start_s": t, "bin_s": args.demand_bin_s, "station": station, "energy_wh": round(wh, 3)}
-        for (t, station), wh in sorted(station_demand.items())] or
-        [{"bin_start_s": "", "bin_s": args.demand_bin_s, "station": "", "energy_wh": ""}])
-    write_csv(os.path.join(out_dir, "home_sessions.csv"), home_sessions or
-              [{"household": "", "start_s": "", "end_s": "", "energy_wh": "", "power_w": ""}])
-    write_csv(os.path.join(out_dir, "home_pending.csv"), totals["home_pending"] or
-              [{"household": "", "arrival_s": "", "charge_wh": ""}])
+        {"bin_start_s": t, "bin_s": args.demand_bin_s, "station": station, "energy_wh": round(wh, 3),
+         "avg_power_kw": round(wh / 1000.0 / (args.demand_bin_s / 3600.0), 4)}
+        for (t, station), wh in sorted(station_demand.items())],
+        ["bin_start_s", "bin_s", "station", "energy_wh", "avg_power_kw"])
+    write_csv(os.path.join(out_dir, "stations.csv"), totals["stations"],
+              ["station", "lane", "edge", "start_pos", "end_pos", "power_w", "efficiency",
+               "x", "y", "lon", "lat"])
+    write_csv(os.path.join(out_dir, "households.csv"), totals["households"],
+              ["household", "capacity_wh", "home_edge", "x", "y", "lon", "lat"])
+    write_csv(os.path.join(out_dir, "home_sessions.csv"), home_sessions,
+              ["household", "home_edge", "start_s", "end_s", "energy_wh", "power_w"])
+    write_csv(os.path.join(out_dir, "home_pending.csv"), totals["home_pending"],
+              ["household", "arrival_s", "charge_wh", "capacity_wh", "home_edge"])
+    with open(os.path.join(out_dir, "run_info.json"), "w") as f:
+        json.dump({"policy": policy.name, "step_length_s": totals["step_length_s"],
+                   "simulation_days": args.days, "seed": args.seed,
+                   "home_charge_power_w": traci_testing.HOME_CHARGE_POWER_W,
+                   "home_charge_efficiency": traci_testing.HOME_CHARGE_EFFICIENCY,
+                   "args": {k: v for k, v in vars(args).items() if not k.startswith("llm_endpoint")}},
+                  f, indent=1, sort_keys=True)
     return summarize(policy.name, legs, totals, args.depleted_soc)
 
 

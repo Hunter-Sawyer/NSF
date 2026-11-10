@@ -406,6 +406,7 @@ def _prepare_dispatch(
         hours = home_energy_added / (home_charge_power_w * home_charge_efficiency)
         home_sessions.append({
             "household": household,
+            "home_edge": home_edges.get(household),
             "start_s": home_arrival["arrival_time"],
             "end_s": home_arrival["arrival_time"] + hours * 3600.0,
             "energy_wh": home_energy_added,
@@ -480,6 +481,37 @@ def _apply_choice(vehicle_id, info, choice, verbose):
         )
 
 
+def _edge_location(edge_id, position=0.0):
+    """x/y (network) and lon/lat (if the network is georeferenced) of a point."""
+    location = {"x": None, "y": None, "lon": None, "lat": None}
+    if not edge_id:
+        return location
+    try:
+        x, y = traci.simulation.convert2D(edge_id, position)
+        lon, lat = traci.simulation.convertGeo(x, y)
+    except traci.exceptions.TraCIException:
+        return location
+    location.update(x=x, y=y)
+    if (lon, lat) != (x, y):  # un-georeferenced networks just echo x/y back
+        location.update(lon=lon, lat=lat)
+    return location
+
+
+def _station_info(station_id):
+    lane = traci.chargingstation.getLaneID(station_id)
+    start = traci.chargingstation.getStartPos(station_id)
+    end = traci.chargingstation.getEndPos(station_id)
+    info = {"station": station_id, "lane": lane, "edge": traci.lane.getEdgeID(lane),
+            "start_pos": start, "end_pos": end}
+    for key, getter in (("power_w", "getChargingPower"), ("efficiency", "getEfficiency")):
+        try:
+            info[key] = getattr(traci.chargingstation, getter)(station_id)
+        except (AttributeError, traci.exceptions.TraCIException):
+            info[key] = None
+    info.update(_edge_location(info["edge"], (start + end) / 2.0))
+    return info
+
+
 def _close_leg(open_legs, trip_log, vehicle_id, end, current_time, charge=None):
     leg = open_legs.pop(vehicle_id, None)
     if leg is None:
@@ -512,6 +544,8 @@ def run_traci_simulation(
     home_sessions=None,
     station_demand=None,
     demand_bin_s=60,
+    charge_events=None,
+    station_occupancy=None,
     sumo_seed=None,
     sumo_log="./logging.log",
     verbose=True,
@@ -530,6 +564,10 @@ def run_traci_simulation(
     choice of every decision, for replaying other policies on the same states;
     ``home_sessions`` (a list) and ``station_demand`` (a dict keyed by
     (bin start s, station)) record charging demand over time;
+    ``charge_events`` (a list) gets every simulation step's energy per
+    charging vehicle and station, and ``station_occupancy`` (a list) every
+    change in the number of vehicles at a station -- the raw data any
+    real-world demand format can be rebuilt from;
     ``initial_charge_fn`` sets a household's first battery level;
     ``verbose=False`` silences the per-step prints. Vehicles are handled in
     sorted ID order each step so runs don't depend on Python's hash seed.
@@ -579,6 +617,10 @@ def run_traci_simulation(
 
     traci.start(traci_cmd)
     charging_stations = traci.chargingstation.getIDList()
+    station_info = [_station_info(station_id) for station_id in charging_stations]
+    step_length = traci.simulation.getDeltaT()
+    household_capacity = {}
+    occupancy = {station_id: 0 for station_id in charging_stations}
     station_energy_wh = {station_id: 0.0 for station_id in charging_stations}
     home_charging_total = {"energy_wh": 0.0}
     vehicle_info = {}
@@ -620,8 +662,17 @@ def run_traci_simulation(
 
             vehicles_at_stations = {}
             for station_id in charging_stations:
-                for vehicle_id in traci.chargingstation.getVehicleIDs(station_id):
+                station_vehicle_ids = traci.chargingstation.getVehicleIDs(station_id)
+                for vehicle_id in station_vehicle_ids:
                     vehicles_at_stations[vehicle_id] = station_id
+                if (station_occupancy is not None
+                        and len(station_vehicle_ids) != occupancy[station_id]):
+                    occupancy[station_id] = len(station_vehicle_ids)
+                    station_occupancy.append({
+                        "time_s": current_time, "station": station_id,
+                        "vehicles": len(station_vehicle_ids),
+                        "vehicle_ids": " ".join(sorted(station_vehicle_ids)),
+                    })
 
             for vehicle_id, info in vehicle_info.items():
                 station_id = vehicles_at_stations.get(vehicle_id)
@@ -644,6 +695,10 @@ def run_traci_simulation(
                     station_id = info.get("station")
                 if station_id in station_energy_wh:
                     station_energy_wh[station_id] += energy_added
+                    if charge_events is not None and energy_added > 0:
+                        # Energy over the step that ended at current_time.
+                        charge_events.append((current_time, station_id, vehicle_id,
+                                              info["activitygen_key"], energy_added))
                     if station_demand is not None and energy_added > 0:
                         bin_start = int(current_time // demand_bin_s) * demand_bin_s
                         key = (bin_start, station_id)
@@ -727,6 +782,7 @@ def run_traci_simulation(
             decisions = resolve(finishers) if resolve else [finish() for finish in finishers]
             for ctx, state, (choice, decision_info) in zip(contexts, states, decisions):
                 vehicle_id = ctx["vehicle_id"]
+                household_capacity[ctx["household"]] = ctx["capacity"]
                 if decision_log is not None:
                     decision_log.append({
                         "state": state,
@@ -823,6 +879,13 @@ def run_traci_simulation(
                 charge = battery_state.get(leg["household"])
                 if charge is not None:
                     leg["min_soc"] = min(leg["min_soc"], charge / leg["capacity_wh"] * 100.0)
+
+        households = []
+        for household in sorted(household_capacity):
+            home_edge = home_edges.get(household)
+            households.append({"household": household,
+                               "capacity_wh": household_capacity[household],
+                               "home_edge": home_edge, **_edge_location(home_edge)})
     finally:
         try:
             traci.close()
@@ -842,9 +905,13 @@ def run_traci_simulation(
         # Households home at the end that never left again: their overnight
         # charging never happens in the sim, but belongs in a demand curve.
         "home_pending": [
-            {"household": key, "arrival_s": value["arrival_time"], "charge_wh": value["charge"]}
+            {"household": key, "arrival_s": value["arrival_time"], "charge_wh": value["charge"],
+             "capacity_wh": household_capacity.get(key), "home_edge": home_edges.get(key)}
             for key, value in sorted(home_state.items())
         ],
+        "stations": station_info,
+        "households": households,
+        "step_length_s": step_length,
     }
 
 

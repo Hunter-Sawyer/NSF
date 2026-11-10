@@ -158,13 +158,21 @@ policy folder:
 |---|---|
 | `trips.csv` | one row per EV leg: start/arrival/min SoC, charger and target, charge and queue time; for risk the household's riskiness; for llm the prompt and the model's decision |
 | `decisions.jsonl` | the full state at every decision (SoC, capacity, time, destination, home-return, energy estimate, and every charger's routes, energy, power and occupancy) plus the choice -- input for replay (section 4) |
-| `station_demand.csv` | public charging energy per station per minute (`--demand-bin-s`) |
-| `home_sessions.csv` | home charging sessions: start (arrival home), end at the home charger's rate, energy |
-| `home_pending.csv` | households home at the end of the sim that never left again (their overnight charge never happens in the sim) |
+| `charge_events.csv.gz` | **raw charging data at the sim's full resolution**: every 1-second step's energy (Wh) per charging vehicle and station (also gives instantaneous kW: Wh per 1-s step x 3.6) |
+| `station_occupancy.csv` | every change in the number of vehicles at each station, with their IDs (ports in use over time) |
+| `stations.csv` | each station's lane, edge, position, power, efficiency, x/y and lon/lat -- for matching real chargers by location |
+| `households.csv` | each EV household's battery capacity and home edge with x/y and lon/lat -- for area-level demand |
+| `home_sessions.csv` | home charging sessions: home edge, start (arrival home), end at the home charger's rate, energy |
+| `home_pending.csv` | households home at the end of the sim that never left again (their overnight charge never happens in the sim), with charge and capacity |
+| `station_demand.csv` | convenience: energy and average kW per station per minute (`--demand-bin-s`) |
+| `run_info.json` | step length, days, seed, home charger power/efficiency, and every argument used |
 | `charging_totals.csv`, `sumo.log` | the sim's own totals and SUMO's log |
 
-The last three are what a comparison with the city's real charge demand
-curves will be built on.
+The demand files keep everything at the simulation's own resolution, so the
+real charge-demand data can be matched in whatever form it comes -- per
+charger, per port or per area; kW readings or kWh per interval; any bin size
+or alignment -- without re-running. Checked: per-second events, per-minute
+bins and the sim's station totals agree exactly.
 
 For reference, a local run of this exact smoke test gave base / risk
 `legs_charging_pct` of 14.58 / 14.58, `depleted` of 3 / 3, and `public_kwh`
@@ -297,6 +305,7 @@ folder's cache are exact.
 | vLLM log: driver/CUDA version error | install a vLLM/torch build matching the node's driver (pin `vllm==<ver>` in `llm_server/requirements.txt`) |
 | vLLM log / download: `401`, `403`, `GatedRepoError` | Llama license not accepted for that repo, or no `huggingface-cli login` -- see "Llama access" in step 1 |
 | `llm_fallback` = `request_failed: ... 400` | server rejected the request; check the vLLM log for the exact error. If it mentions `enable_thinking`/`chat_template_kwargs`, add `EXTRA_ARGS="--llm-thinking"` for that model's sim job |
+| `pj_obj_create: Cannot find proj.db` in the sim log | harmless: lon/lat output is still correct (checked on the PA network) |
 | RCD email: low GPU utilization | expected for the 1B/3B models (they can't fill an A100); harmless unless it says the GPU was unused |
 | `llm_fallback` = `invalid_decision` | model picked a station not in its list or a bad target -- inspect `llm_decision` in `trips.csv` |
 | sim: `ModuleNotFoundError: traci` / `sumo: not found` | sim venv not active or missing packages -- rerun step 1 for the sim venv |
