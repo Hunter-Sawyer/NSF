@@ -1,0 +1,4 @@
+# Model-serving venv only (the sim uses Scripts/hpc/requirements.txt).
+# pip install into $WORK/llm_venv from an hpcshell session -- don't spack load.
+# Pick the vllm version the model's docs recommend; Qwen3-AWQ works on recent releases.
+vllm

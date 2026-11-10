@@ -1,0 +1,8 @@
+# Sim venv only (the model has its own venv in llm_server/).
+# charge_eval.py talks to vLLM with the standard library, so no openai package needed.
+eclipse-sumo==1.27.1
+# eclipse-sumo only asks for sumo-data>=1.27.1; a newer sumo-data ships
+# libraries the 1.27.1 binaries can't load, so pin it to match.
+sumo-data==1.27.1
+sumolib==1.27.1
+traci==1.27.1
