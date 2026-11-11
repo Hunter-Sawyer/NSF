@@ -2,6 +2,7 @@ import csv
 import os
 import random
 import sys
+import time
 from pathlib import Path
 
 if "SUMO_HOME" in os.environ:
@@ -15,6 +16,13 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 HOME_CHARGE_POWER_W = 7200.0
 HOME_CHARGE_EFFICIENCY = 0.95
 SIMULATION_DAYS = 2
+DIAGNOSTICS_ENABLED = False
+
+
+def _diagnostic(message):
+    if DIAGNOSTICS_ENABLED:
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[diag {timestamp}] {message}", flush=True)
 
 
 def _resolve_path(path):
@@ -70,13 +78,23 @@ def _is_home_return(vehicle_id, route, home_edges, home_return_trip_numbers):
 
 
 def _route_stage(from_edge, to_edge):
+    started = time.perf_counter()
+    _diagnostic(f"route-search-start from={from_edge} to={to_edge}")
     try:
         stage = traci.simulation.findRoute(from_edge, to_edge, vType="electric_vehicle",
                                            depart=-1,
                                            routingMode=0)
-    except traci.exceptions.TraCIException:
+    except traci.exceptions.TraCIException as error:
+        _diagnostic(
+            f"route-search-error from={from_edge} to={to_edge} "
+            f"elapsed={time.perf_counter() - started:.3f}s error={error}"
+        )
         return None
 
+    _diagnostic(
+        f"route-search-end from={from_edge} to={to_edge} "
+        f"elapsed={time.perf_counter() - started:.3f}s"
+    )
     return stage if stage.edges else None
 
 
@@ -284,6 +302,7 @@ def _dispatch_vehicle(
     if not route:
         return
 
+    _diagnostic(f"dispatch-start vehicle={vehicle_id}")
     household = activitygen_vehicle_key(vehicle_id)
     _remember_home_edge(vehicle_id, route, home_edges)
 
@@ -297,6 +316,8 @@ def _dispatch_vehicle(
     )
     home_charging_total["energy_wh"] += home_energy_added
     destination_edge = route[-1]
+    choice_started = time.perf_counter()
+    _diagnostic(f"charger-choice-start vehicle={vehicle_id}")
     choice = choose_least_impact_charger(
         vehicle_id,
         destination_edge,
@@ -306,6 +327,11 @@ def _dispatch_vehicle(
         reserve_soc=reserve_soc,
         estimated_consumption_wh_per_meter=estimated_consumption_wh_per_meter,
         charge_target_soc=charge_target_soc,
+    )
+    _diagnostic(
+        f"charger-choice-end vehicle={vehicle_id} "
+        f"elapsed={time.perf_counter() - choice_started:.3f}s "
+        f"station={choice['station'] if choice else None}"
     )
 
     info = vehicle_info.setdefault(vehicle_id, {})
@@ -332,11 +358,15 @@ def _dispatch_vehicle(
     })
 
     traci.vehicle.changeTarget(vehicle_id, choice["edge"])
+    _diagnostic(
+        f"charging-target-set vehicle={vehicle_id} station={choice['station']}")
     traci.vehicle.setChargingStationStop(
         vehicle_id,
         choice["station"],
         duration=100000,
     )
+    _diagnostic(
+        f"charging-stop-set vehicle={vehicle_id} station={choice['station']}")
 
     print(
         f"{vehicle_id}: charging at {choice['station']} "
@@ -357,6 +387,7 @@ def run_traci_simulation(
     home_charge_efficiency=HOME_CHARGE_EFFICIENCY,
     simulation_days=SIMULATION_DAYS,
     charging_totals_file=None,
+    diagnostics=False,
 ):
     """Run ActivityGen trips and make charging decisions through TraCI.
 
@@ -365,6 +396,9 @@ def run_traci_simulation(
     destination after charging. The ActivityGen schedule is expected to have
     been generated with the same ``simulation_days`` value (five by default).
     """
+    global DIAGNOSTICS_ENABLED
+    DIAGNOSTICS_ENABLED = diagnostics
+
     if not isinstance(simulation_days, int) or simulation_days <= 0:
         raise ValueError("simulation_days must be a positive integer")
 
@@ -406,6 +440,16 @@ def run_traci_simulation(
 
     try:
         while traci.simulation.getMinExpectedNumber() > 0:
+            iteration_time = traci.simulation.getTime()
+            trace_iteration = (
+                DIAGNOSTICS_ENABLED and int(iteration_time) % 100 == 0
+            )
+            if trace_iteration:
+                _diagnostic(
+                    f"loop-start sim_time={iteration_time:.0f} "
+                    f"tracked_vehicles={len(vehicle_info)}"
+                )
+
             previous_vehicle_charge = {}
             for vehicle_id in vehicle_info:
                 try:
@@ -418,9 +462,23 @@ def run_traci_simulation(
                 except traci.exceptions.TraCIException:
                     continue
 
+            if trace_iteration:
+                _diagnostic(
+                    f"battery-read-end sim_time={iteration_time:.0f} "
+                    f"read_vehicles={len(previous_vehicle_charge)}"
+                )
             _remember_battery_levels(battery_state)
+            step_started = time.perf_counter()
+            if trace_iteration:
+                _diagnostic(
+                    f"simulation-step-start sim_time={iteration_time:.0f}")
             traci.simulationStep()
             current_time = traci.simulation.getTime()
+            if trace_iteration:
+                _diagnostic(
+                    f"simulation-step-end sim_time={current_time:.0f} "
+                    f"elapsed={time.perf_counter() - step_started:.3f}s"
+                )
 
             vehicles_at_stations = {}
             for station_id in charging_stations:
@@ -552,6 +610,8 @@ def run_traci_simulation(
                         info["state"] = "to_destination"
 
             _remember_battery_levels(battery_state)
+            if trace_iteration:
+                _diagnostic(f"loop-end sim_time={current_time:.0f}")
     finally:
         try:
             traci.close()
