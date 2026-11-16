@@ -1,6 +1,9 @@
 # Sim venv only (the model has its own venv in llm_server/).
 # charge_eval.py talks to vLLM with the standard library, so no openai package needed.
-eclipse-sumo==1.27.1
+# eclipse-sumo 1.27.1, pinned to its manylinux2014 build: pip would otherwise
+# pick the manylinux_2_28 build on the Rocky 8 nodes, whose bundled arrow and
+# parquet need libatomic, which the nodes lack. Same SUMO version either way.
+eclipse-sumo @ https://files.pythonhosted.org/packages/b2/00/0b88a931c50e277a46ee6110216ef8ca299b064cca82d1fc481d4155754a/eclipse_sumo-1.27.1-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl#sha256=97abddcb7395c25538f22a272ef67ca77c8a625d3eec6010eed5b62dfac011f3
 # eclipse-sumo only asks for sumo-data>=1.27.1; a newer sumo-data ships
 # libraries the 1.27.1 binaries can't load, so pin it to match.
 sumo-data==1.27.1

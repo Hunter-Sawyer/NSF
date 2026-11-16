@@ -53,8 +53,13 @@ appear, so both can be submitted back to back.
 
 ## 1. One-time setup
 
+**Log in.** Either `ssh <username>@login.hpc.tntech.edu`, or, if SSH doesn't
+work from your machine, the Open OnDemand web portal at
+https://ood.hpc.tntech.edu (TTU sign-in; use its shell or a Desktop app's
+terminal). Off campus, either may need TTU's VPN.
+
 **Find your account and storage folder.** Both are printed at the bottom of
-the message shown when you log in to `login.hpc.tntech.edu`:
+the message shown when you log in over SSH:
 
 ```
 Job submission accounts you have access to:
@@ -63,7 +68,8 @@ Group storage folders you have access to:
  /work/projects/<account> ...
 ```
 
-(`sacctmgr show association format=account%20,user%20` also lists accounts.)
+From a web-portal shell, which may not show that message:
+`sacctmgr -n show assoc user=$USER format=account%30` and `ls /work/projects`.
 Use the account for this NSF project; if there are several and it's unclear
 which, ask the PI. Home directories are very small, so `WORK` should be a
 folder in the group storage, e.g. `/work/projects/<account>/<username>`. It
@@ -73,50 +79,74 @@ and results -- budget ~100 GB.
 Edit placeholders:
 - `WORK=<path_to_work_folder>` in **both** `llm_server/setup_env.sh` and
   `Scripts/hpc/setup_sim_env.sh` -- must be identical (shared endpoint folder).
-- `--account=<account_name>` in **both** `.slurm` files.
+- `--account=<account_name>` in all three `.slurm` files.
+
+One command does all of it (run in `GreenEVT`, with your own values):
+
+```bash
+sed -i 's#<path_to_work_folder>#/work/projects/<account>/<username>#; s#<account_name>#<account>#' \
+    llm_server/setup_env.sh Scripts/hpc/setup_sim_env.sh llm_server/serve_model.slurm \
+    Scripts/hpc/run_charge_eval.slurm Scripts/hpc/run_replay.slurm
+```
 
 **Build the two venvs** from an interactive session (the login node can't be
 used for this). `hpcshell` defaults to 1 CPU / 2 GB / 2 h, which is too small
 for installing vLLM, so ask for more. Python comes from Spack's
-`py-virtualenv` (RCD's documented method; gives Python 3.10, which vLLM and
-SUMO support); all packages are plain `pip`, never `spack load`:
+`py-virtualenv` (RCD's documented method; as of Nov 2026 it gives Python
+3.13, which vLLM and SUMO support); all packages are plain `pip`, never
+`spack load`.
+
+Create **both** venvs before sourcing either setup script: the scripts
+`unset PYTHONPATH`, after which Spack's `virtualenv` fails with
+`No module named 'virtualenv'` until you open a fresh shell.
 
 ```bash
 hpcshell --account=<account_name> --cpus-per-task=8 --mem=32G --time=03:00:00
 cd <repo>/GreenEVT
 mkdir -p $WORK    # if it doesn't exist yet; same path as in the setup scripts
 spack load py-virtualenv
+virtualenv $WORK/llm_venv
+virtualenv $WORK/sim_venv
 
 # model venv
-virtualenv $WORK/llm_venv
 source llm_server/setup_env.sh
 pip install -r llm_server/requirements.txt
 deactivate
 
 # sim venv
-virtualenv $WORK/sim_venv
 source Scripts/hpc/setup_sim_env.sh
 pip install -r Scripts/hpc/requirements.txt
-sumo --version     # should print Eclipse SUMO 1.27.1
+sumo --version     # first line: Eclipse SUMO sumo 1.27.1
 deactivate
 
 # Hugging Face login (needed for the gated Llama models; see below).
 # Run after sourcing setup_env.sh so the token is stored under $WORK/hf_cache.
+# (Current huggingface_hub has the `hf` command; `huggingface-cli` is gone.)
 source llm_server/setup_env.sh
-huggingface-cli login
+hf auth login
 
 # pre-download all five models (also confirms the node has internet access)
 for m in Qwen/Qwen3-4B Qwen/Qwen3-8B meta-llama/Llama-3.2-1B-Instruct \
          meta-llama/Llama-3.2-3B-Instruct meta-llama/Llama-3.1-8B-Instruct; do
-    huggingface-cli download "$m"
+    hf download "$m"
 done
 ```
+
+Two SUMO workarounds for the Rocky 8 nodes are already built in, so nothing
+to do, but good to know if SUMO misbehaves:
+- `Scripts/hpc/requirements.txt` pins the `manylinux2014` build of
+  eclipse-sumo 1.27.1. pip would otherwise choose the `manylinux_2_28`
+  build, which needs `libatomic`, and the nodes don't have it.
+- Run directly, the wheel's `sumo` binary segfaults (exit 139, often with
+  no output at all). Started through `/lib64/ld-linux-x86-64.so.2` it works,
+  so `setup_sim_env.sh` writes a wrapper to `$WORK/sumo_wrap/sumo` and puts
+  it first on `PATH`.
 
 **Llama access (one-time, before the download).** Meta's Llama repos are
 gated: on huggingface.co, sign in, open each of the three `meta-llama/...`
 model pages and accept the license (approval is usually quick but not
 instant), then create a read token under Settings -> Access Tokens and paste
-it into `huggingface-cli login`. The Qwen models need none of this.
+it into `hf auth login`. The Qwen models need none of this.
 
 If `virtualenv` reports an old Python (< 3.10) or the download hangs (no
 internet from compute nodes), stop and open an HPC Issues ticket / RCD
@@ -129,15 +159,33 @@ days (48 EV legs), with a deliberately tiny battery so public-charging
 decisions actually happen. Uses one model (Qwen3-4B, smallest download that
 isn't gated); takes a few minutes once the model is up.
 
+Submit from a login-node shell with no venv active (`--export=ALL` copies
+your shell's environment into the job). A short `--time` helps the jobs start
+sooner when the cluster is busy:
+
 ```bash
 cd <repo>/GreenEVT/llm_server
-sbatch --export=ALL,MODEL=Qwen/Qwen3-4B serve_model.slurm
+SERVER=$(sbatch --parsable --time=03:00:00 --export=ALL,MODEL=Qwen/Qwen3-4B serve_model.slurm)
 
 cd ../Scripts/hpc
-sbatch --export=ALL,NET=hpc/smoke/dummy_grid.net.xml,ROUTES=hpc/smoke/routes.xml,CHARGERS=hpc/smoke/chargers.xml,DAYS=2,LLM_MODELS=Qwen/Qwen3-4B,EXTRA_ARGS="--soc-mean 25" run_charge_eval.slurm
+SMOKE=NET=hpc/smoke/dummy_grid.net.xml,ROUTES=hpc/smoke/routes.xml,CHARGERS=hpc/smoke/chargers.xml,DAYS=2,EXTRA_ARGS="--soc-mean 25"
+
+# base + risk need no GPU: runs right away, done in a few minutes
+sbatch --time=01:00:00 --export=ALL,$SMOKE,POLICIES="base risk" run_charge_eval.slurm
+
+# llm starts once the model job starts (it then waits for the model to load),
+# and a tiny job stops the model server when it's done, so nobody has to watch
+SIM=$(sbatch --parsable --dependency=after:$SERVER --time=01:00:00 \
+      --export=ALL,$SMOKE,POLICIES=llm,LLM_MODELS=Qwen/Qwen3-4B,LLM_WAIT_MINUTES=30 run_charge_eval.slurm)
+sbatch --dependency=afterany:$SIM --account=<account_name> --time=00:05:00 \
+      --job-name=stop-llm --output=stop-llm-%j.log --wrap="scancel $SERVER"
 
 squeue -u $USER
 ```
+
+The two sim jobs write separate result folders; to see one table:
+`python ../combine_summaries.py $WORK/charge_eval_out/seed_42_<job1> $WORK/charge_eval_out/seed_42_<job2>`
+(with the sim venv active).
 
 Paths in `NET`/`ROUTES`/`CHARGERS` are relative to `GreenEVT/Scripts`
 (the sim job `cd`s there). Logs: `charge-llm-vllm-<jobid>.log` in
@@ -174,10 +222,11 @@ charger, per port or per area; kW readings or kWh per interval; any bin size
 or alignment -- without re-running. Checked: per-second events, per-minute
 bins and the sim's station totals agree exactly.
 
-For reference, a local run of this exact smoke test gave base / risk
-`legs_charging_pct` of 14.58 / 14.58, `depleted` of 3 / 3, and `public_kwh`
-of 4.927 / 3.04. Base and risk must match that exactly on the HPC (same seed,
-fully deterministic); llm numbers depend on the model. SUMO's `Warning: Battery of vehicle ... is
+For reference, this exact smoke test gave base / risk `legs_charging_pct` of
+14.58 / 14.58, `depleted` of 3 / 3, and `public_kwh` of 4.927 / 3.04, both
+locally and on the HPC (Nov 2026). Base and risk must match that exactly
+(same seed, fully deterministic); llm numbers depend on the model. On the HPC,
+Qwen3-4B gave `llm_fallbacks` 0 and `llm_latency_s_mean` 0.74. SUMO's `Warning: Battery of vehicle ... is
 depleted` lines in the log correspond to the `depleted` count.
 
 A `Could not connect to TraCI server ... Retrying` line at the start of each
@@ -303,7 +352,12 @@ folder's cache are exact.
 | sim log: endpoint found but requests time out | the sim node can't reach the GPU node's port -- both jobs must be on `batch-warp`; if they are, ask RCD whether node-to-node traffic on high ports is allowed |
 | job pending a long time | check `squeue -u $USER` REASON; `batch-warp` is low priority under fair share, so waits are normal when the cluster is busy |
 | vLLM log: driver/CUDA version error | install a vLLM/torch build matching the node's driver (pin `vllm==<ver>` in `llm_server/requirements.txt`) |
-| vLLM log / download: `401`, `403`, `GatedRepoError` | Llama license not accepted for that repo, or no `huggingface-cli login` -- see "Llama access" in step 1 |
+| vLLM log / download: `401`, `403`, `GatedRepoError` | Llama license not accepted for that repo, or no `hf auth login` -- see "Llama access" in step 1 |
+| `huggingface-cli: command not found` | use `hf` (`hf download`, `hf auth login`) |
+| `virtualenv`: `No module named 'virtualenv'` | a setup script was sourced in this shell and cleared `PYTHONPATH`; open a fresh shell (or `exit` and start a new `hpcshell`), then `spack load py-virtualenv` again |
+| `sumo --version` prints nothing, or `Segmentation fault` / exit 139 | the wrapper isn't in use: source `Scripts/hpc/setup_sim_env.sh` (from this version on), and check `which sumo` shows `$WORK/sumo_wrap/sumo`; and that the venv has the `manylinux2014` build (`pip install --force-reinstall -r Scripts/hpc/requirements.txt`) |
+| SSH to `login.hpc.tntech.edu` fails | use the web portal https://ood.hpc.tntech.edu; off campus, connect to TTU's VPN first |
+| sim job pending with `Nodes required for job are DOWN, DRAINED or reserved...` | usually just a full cluster; lower the time limit (`scontrol update JobId=<id> TimeLimit=01:00:00`) so it can fit into gaps |
 | `llm_fallback` = `request_failed: ... 400` | server rejected the request; check the vLLM log for the exact error. If it mentions `enable_thinking`/`chat_template_kwargs`, add `EXTRA_ARGS="--llm-thinking"` for that model's sim job |
 | `pj_obj_create: Cannot find proj.db` in the sim log | harmless: lon/lat output is still correct (checked on the PA network) |
 | RCD email: low GPU utilization | expected for the 1B/3B models (they can't fill an A100); harmless unless it says the GPU was unused |
