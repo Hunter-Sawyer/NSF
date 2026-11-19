@@ -234,11 +234,14 @@ policy is normal -- SUMO is still starting up.
 
 ## 3. Real runs (Palo Alto)
 
-Use the same ActivityGen route file (and tracker, if any) the team runs
-`traci_testing.py` with, and the number of days it was generated for:
+Use the team's 1-day ActivityGen route file `6_179_rou.xml` (`DAYS=1`), the
+PA network, and the real-charger file `chargers_palo_alto.xml` (see
+"Chargers" below). Leave out the tracker: it writes every job's counts to one
+fixed file, so parallel jobs would overwrite each other, and the charging
+evaluation doesn't use it.
 
 ```bash
-PA="NET=<PA.net.xml>,ROUTES=<activitygen .rou.xml>,TRACKER=<tracker.xml>,DAYS=<days>,SEED=42"
+PA="NET=<PA.network.net.xml>,ROUTES=<6_179_rou.xml>,CHARGERS=./chargers_palo_alto.xml,DAYS=1,SEED=42"
 MODELS="Qwen/Qwen3-4B Qwen/Qwen3-8B meta-llama/Llama-3.2-1B-Instruct meta-llama/Llama-3.2-3B-Instruct meta-llama/Llama-3.1-8B-Instruct"
 
 # one GPU job per model
@@ -264,9 +267,40 @@ turn: `LLM_MODELS="<id> <id>"` (all those model jobs must be up).
 
 - `DAYS` must match the schedule: e.g. the 10k-population `6_179_rou.xml`
   covers one day (departures end around 18:15), so `DAYS=1`.
-- `CHARGERS` defaults to `./chargers_additional.xml` (in `Scripts/`).
-- The tracker writes to `../outputs/<name>_traffic.xml` relative to its own
-  folder, so keep it in a `trackers/` folder next to an `outputs/` folder.
+- `CHARGERS` defaults to `./chargers_additional.xml` (in `Scripts/`), the
+  team's older 5-station file; pass `./chargers_palo_alto.xml` for these runs.
+
+**Chargers.** `Scripts/chargers_palo_alto.xml` is built by
+`Scripts/build_chargers.py` from the City of Palo Alto session data
+("Electric Vehicle Charging Station Usage (July 2011 - Dec 2020)", downloaded
+from data.paloalto.gov as `ChargePoint Data CY20Q4.csv`; 259,415 sessions, 47
+stations, 80 ports). Not in git: download it into `GreenEVT/data/Palo Alto/`
+to rebuild. It holds:
+- one sim station per real station and port type (48 placed)
+- each port's measured rating: 95th percentile of kWh / charging hours, about
+  6.1 kW for Level 2 and 1.4 kW for Level 1
+- room for as many cars as the station has ports
+- `chargers_palo_alto_stations.csv`, which maps every sim id to the real
+  station name, ports, rating, lane and distance; join on it to compare
+  sim and real demand charger by charger
+
+Placement uses the team's rule (nearest lane within 100 m), then 400 m for
+the Cambridge and Sherman garages, whose side streets the network lacks
+(placed 190-320 m away). Placed stations cover 89% of real sessions. Mitchell
+Park Library (`MPL #1-6`, 11% of sessions) is east of the network and can't
+be placed: leave it out of the real data in comparisons. Note the city data
+lists `BRYANT # 1` (13 sessions) apart from `BRYANT #1`; kept as given.
+
+Rebuild (needs `pyproj` for lat/lon):
+
+```bash
+cd <repo>/GreenEVT/Scripts
+python build_chargers.py --csv "../data/Palo Alto/ChargePoint Data CY20Q4.csv" \
+    --net <PA.network.net.xml> --out chargers_palo_alto.xml --max-radius 400
+```
+- If you do use a tracker (`TRACKER=`), it writes to `../outputs/<name>_traffic.xml`
+  relative to its own folder, so keep it in a `trackers/` folder next to an
+  `outputs/` folder, and run only one job with it at a time.
 - EVs are the vType `electric_vehicle` with the battery device params, and
   trip IDs follow ActivityGen's `<household>:<trip number>` form -- the sim
   uses them to carry battery state and detect return-home legs.

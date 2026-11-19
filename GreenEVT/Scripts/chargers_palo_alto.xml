@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Built by build_chargers.py from ChargePoint Data CY20Q4.csv, lanes within 100 then 400 m; 6 real station groups not placed; sim id -> real station in chargers_palo_alto_stations.csv -->
+<additional>
+    <chargingStation id="0" lane="678459745#0_0" startPos="0.0" endPos="7.5" friendlyPos="true" power="6090" totalPower="6090" name="PALO ALTO CA / BRYANT # 1 (Level 2)"/>
+    <chargingStation id="1" lane="-678459758#0_0" startPos="0.0" endPos="7.5" friendlyPos="true" power="1380" totalPower="1380" name="PALO ALTO CA / BRYANT #1 (Level 1)"/>
+    <chargingStation id="2" lane="-678459758#0_0" startPos="7.5" endPos="15.0" friendlyPos="true" power="6000" totalPower="6000" name="PALO ALTO CA / BRYANT #1 (Level 2)"/>
+    <chargingStation id="3" lane="-678459758#1_0" startPos="0.0" endPos="7.5" friendlyPos="true" power="1370" totalPower="1370" name="PALO ALTO CA / BRYANT #2 (Level 1)"/>
+    <chargingStation id="4" lane="-678459758#1_0" startPos="7.5" endPos="15.0" friendlyPos="true" power="5920" totalPower="5920" name="PALO ALTO CA / BRYANT #2 (Level 2)"/>
+    <chargingStation id="5" lane="-678459758#1_0" startPos="15.0" endPos="22.5" friendlyPos="true" power="1440" totalPower="1440" name="PALO ALTO CA / BRYANT #3 (Level 1)"/>
+    <chargingStation id="6" lane="678459758#0_0" startPos="0.0" endPos="7.5" friendlyPos="true" power="5960" totalPower="5960" name="PALO ALTO CA / BRYANT #3 (Level 2)"/>
+    <chargingStation id="7" lane="678459761#1_0" startPos="0.0" endPos="15.0" friendlyPos="true" power="6070" totalPower="12140" name="PALO ALTO CA / BRYANT #4 (Level 2)"/>
+    <chargingStation id="8" lane="-678459759#1_0" startPos="0.0" endPos="15.0" friendlyPos="true" power="6120" totalPower="12240" name="PALO ALTO CA / BRYANT #5 (Level 2)"/>
+    <chargingStation id="9" lane="678459758#1_0" startPos="0.0" endPos="15.0" friendlyPos="true" power="6120" totalPower="12240" name="PALO ALTO CA / BRYANT #6 (Level 2)"/>
+    <chargingStation id="10" lane="-8947859#1_0" startPos="0.0" endPos="15.0" friendlyPos="true" power="6040" totalPower="12080" name="PALO ALTO CA / CAMBRIDGE #1 (Level 2)"/>
+    <chargingStation id="11" lane="-8947859#1_0" startPos="15.0" endPos="30.0" friendlyPos="true" power="5950" totalPower="11900" name="PALO ALTO CA / CAMBRIDGE #2 (Level 2)"/>
+    <chargingStation id="12" lane="-8947859#1_0" startPos="30.0" endPos="45.0" friendlyPos="true" power="6090" totalPower="12180" name="PALO ALTO CA / CAMBRIDGE #3 (Level 2)"/>
+    <chargingStation id="13" lane="-8947859#1_0" startPos="45.0" endPos="60.0" friendlyPos="true" power="6100" totalPower="12200" name="PALO ALTO CA / CAMBRIDGE #4 (Level 2)"/>
+    <chargingStation id="14" lane="-8947859#1_0" startPos="60.0" endPos="75.0" friendlyPos="true" power="6090" totalPower="12180" name="PALO ALTO CA / CAMBRIDGE #5 (Level 2)"/>
+    <chargingStation id="15" lane="-678462142#0_0" startPos="0.0" endPos="7.5" friendlyPos="true" power="1350" totalPower="1350" name="PALO ALTO CA / HAMILTON #1 (Level 1)"/>
+    <chargingStation id="16" lane="-678462142#0_0" startPos="7.5" endPos="15.0" friendlyPos="true" power="5570" totalPower="5570" name="PALO ALTO CA / HAMILTON #1 (Level 2)"/>
+    <chargingStation id="17" lane="678459752#0_0" startPos="0.0" endPos="15.0" friendlyPos="true" power="5610" totalPower="11220" name="PALO ALTO CA / HAMILTON #2 (Level 2)"/>
+    <chargingStation id="18" lane="158923708#4_0" startPos="0.0" endPos="15.0" friendlyPos="true" power="6200" totalPower="12400" name="PALO ALTO CA / HIGH #1 (Level 2)"/>
+    <chargingStation id="19" lane="94840728#1_0" startPos="0.0" endPos="15.0" friendlyPos="true" power="6140" totalPower="12280" name="PALO ALTO CA / HIGH #2 (Level 2)"/>
+    <chargingStation id="20" lane="94840728#1_0" startPos="15.0" endPos="30.0" friendlyPos="true" power="6100" totalPower="12200" name="PALO ALTO CA / HIGH #3 (Level 2)"/>
+    <chargingStation id="21" lane="776297600_0" startPos="0.0" endPos="15.0" friendlyPos="true" power="6180" totalPower="12360" name="PALO ALTO CA / HIGH #4 (Level 2)"/>
+    <chargingStation id="22" lane="-707477295#7_0" startPos="0.0" endPos="7.5" friendlyPos="true" power="1380" totalPower="1380" name="PALO ALTO CA / RINCONADA LIB 1 (Level 1)"/>
+    <chargingStation id="23" lane="-707477295#7_0" startPos="7.5" endPos="15.0" friendlyPos="true" power="6130" totalPower="6130" name="PALO ALTO CA / RINCONADA LIB 1 (Level 2)"/>
+    <chargingStation id="24" lane="-707477295#7_0" startPos="15.0" endPos="22.5" friendlyPos="true" power="1380" totalPower="1380" name="PALO ALTO CA / RINCONADA LIB 2 (Level 1)"/>
+    <chargingStation id="25" lane="-707477295#7_0" startPos="22.5" endPos="30.0" friendlyPos="true" power="6120" totalPower="6120" name="PALO ALTO CA / RINCONADA LIB 2 (Level 2)"/>
+    <chargingStation id="26" lane="-707477295#7_0" startPos="30.0" endPos="37.5" friendlyPos="true" power="1380" totalPower="1380" name="PALO ALTO CA / RINCONADA LIB 3 (Level 1)"/>
+    <chargingStation id="27" lane="-707477295#7_0" startPos="37.5" endPos="45.0" friendlyPos="true" power="6130" totalPower="6130" name="PALO ALTO CA / RINCONADA LIB 3 (Level 2)"/>
+    <chargingStation id="28" lane="-27422581_0" startPos="0.0" endPos="15.0" friendlyPos="true" power="6090" totalPower="12180" name="PALO ALTO CA / SHERMAN 1 (Level 2)"/>
+    <chargingStation id="29" lane="-663298912#0_0" startPos="0.0" endPos="7.5" friendlyPos="true" power="6090" totalPower="6090" name="PALO ALTO CA / SHERMAN 11 (Level 2)"/>
+    <chargingStation id="30" lane="663298912#0_0" startPos="0.0" endPos="7.5" friendlyPos="true" power="6090" totalPower="6090" name="PALO ALTO CA / SHERMAN 14 (Level 2)"/>
+    <chargingStation id="31" lane="-27422581_0" startPos="15.0" endPos="22.5" friendlyPos="true" power="6090" totalPower="6090" name="PALO ALTO CA / SHERMAN 15 (Level 2)"/>
+    <chargingStation id="32" lane="27422581_0" startPos="0.0" endPos="7.5" friendlyPos="true" power="6090" totalPower="6090" name="PALO ALTO CA / SHERMAN 17 (Level 2)"/>
+    <chargingStation id="33" lane="27422581_0" startPos="7.5" endPos="15.0" friendlyPos="true" power="6090" totalPower="6090" name="PALO ALTO CA / SHERMAN 2 (Level 2)"/>
+    <chargingStation id="34" lane="661222198#4_0" startPos="0.0" endPos="15.0" friendlyPos="true" power="6090" totalPower="12180" name="PALO ALTO CA / SHERMAN 3 (Level 2)"/>
+    <chargingStation id="35" lane="661222198#4_0" startPos="15.0" endPos="30.0" friendlyPos="true" power="6090" totalPower="12180" name="PALO ALTO CA / SHERMAN 4 (Level 2)"/>
+    <chargingStation id="36" lane="27422581_0" startPos="15.0" endPos="22.5" friendlyPos="true" power="6090" totalPower="6090" name="PALO ALTO CA / SHERMAN 5 (Level 2)"/>
+    <chargingStation id="37" lane="661222198#4_0" startPos="30.0" endPos="45.0" friendlyPos="true" power="6090" totalPower="12180" name="PALO ALTO CA / SHERMAN 6 (Level 2)"/>
+    <chargingStation id="38" lane="661222198#4_0" startPos="45.0" endPos="60.0" friendlyPos="true" power="6090" totalPower="12180" name="PALO ALTO CA / SHERMAN 7 (Level 2)"/>
+    <chargingStation id="39" lane="661222198#4_0" startPos="60.0" endPos="75.0" friendlyPos="true" power="6090" totalPower="12180" name="PALO ALTO CA / SHERMAN 8 (Level 2)"/>
+    <chargingStation id="40" lane="-8959966#5_0" startPos="0.0" endPos="7.5" friendlyPos="true" power="6090" totalPower="6090" name="PALO ALTO CA / SHERMAN 9 (Level 2)"/>
+    <chargingStation id="41" lane="-8959966#3_0" startPos="0.0" endPos="15.0" friendlyPos="true" power="6160" totalPower="12320" name="PALO ALTO CA / TED THOMPSON #1 (Level 2)"/>
+    <chargingStation id="42" lane="8959966#3_0" startPos="0.0" endPos="15.0" friendlyPos="true" power="6090" totalPower="12180" name="PALO ALTO CA / TED THOMPSON #2 (Level 2)"/>
+    <chargingStation id="43" lane="-8959966#2_0" startPos="0.0" endPos="15.0" friendlyPos="true" power="6050" totalPower="12100" name="PALO ALTO CA / TED THOMPSON #3 (Level 2)"/>
+    <chargingStation id="44" lane="8959966#2_0" startPos="0.0" endPos="15.0" friendlyPos="true" power="6060" totalPower="12120" name="PALO ALTO CA / TED THOMPSON #4 (Level 2)"/>
+    <chargingStation id="45" lane="-699923426#0_0" startPos="0.0" endPos="15.0" friendlyPos="true" power="6070" totalPower="12140" name="PALO ALTO CA / WEBSTER #1 (Level 2)"/>
+    <chargingStation id="46" lane="-699923426#1_0" startPos="0.0" endPos="15.0" friendlyPos="true" power="6070" totalPower="12140" name="PALO ALTO CA / WEBSTER #2 (Level 2)"/>
+    <chargingStation id="47" lane="-699923426#1_0" startPos="15.0" endPos="30.0" friendlyPos="true" power="6100" totalPower="12200" name="PALO ALTO CA / WEBSTER #3 (Level 2)"/>
+</additional>
