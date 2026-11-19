@@ -59,6 +59,7 @@ def summarize(name, legs, totals, depleted_soc):
         'completed': len(done),
         'unfinished': sum(leg["end"] == "unfinished" for leg in legs),
         'vanished': sum(leg["end"] == "vanished" for leg in legs),
+        'teleported': sum(leg.get("teleports", 0) > 0 for leg in legs),
         'depleted': depleted,
         'depleted_pct': round(100.0 * depleted / n, 2),
         'households_depleted': len({leg["household"] for leg in legs if leg["min_soc"] <= depleted_soc}),

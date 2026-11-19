@@ -628,6 +628,9 @@ def run_traci_simulation(
     home_state = {}
     home_edges = {}
     open_legs = {}  # vehicle_id -> trip_log record for the leg in progress
+    # A vehicle SUMO is teleporting out of a jam (--time-to-teleport) is
+    # missing from getIDList until the teleport ends; keep tracking it.
+    teleporting = set()
     current_time = 0.0
 
     try:
@@ -659,6 +662,12 @@ def run_traci_simulation(
                     flush=True,
                 )
             current_time = traci.simulation.getTime()
+
+            for vehicle_id in traci.simulation.getStartingTeleportIDList():
+                teleporting.add(vehicle_id)
+                if vehicle_id in open_legs:
+                    open_legs[vehicle_id]["teleports"] += 1
+            teleporting.difference_update(traci.simulation.getEndingTeleportIDList())
 
             vehicles_at_stations = {}
             for station_id in charging_stations:
@@ -706,6 +715,7 @@ def run_traci_simulation(
 
             departed = set(traci.simulation.getDepartedIDList())
             arrived = set(traci.simulation.getArrivedIDList())
+            teleporting -= arrived
             stop_ended = set(
                 traci.simulation.getStopEndingVehiclesIDList()
             )
@@ -802,6 +812,7 @@ def run_traci_simulation(
                         "station": choice["station"] if choice else "",
                         "target_soc": round(choice["target_charge"] / ctx["capacity"] * 100.0, 2) if choice else "",
                         "charge_stops": 0, "charge_min": 0.0, "wait_min": 0.0, "charged_kwh": 0.0,
+                        "teleports": 0,
                         **decision_info,
                     }
                 _apply_choice(vehicle_id, vehicle_info[vehicle_id], choice, verbose)
@@ -809,6 +820,8 @@ def run_traci_simulation(
             active_vehicle_ids = set(traci.vehicle.getIDList())
             for vehicle_id, info in list(vehicle_info.items()):
                 if vehicle_id not in active_vehicle_ids:
+                    if vehicle_id in teleporting:
+                        continue
                     vehicle_info.pop(vehicle_id)
                     if trip_log is not None:
                         _close_leg(open_legs, trip_log, vehicle_id, "vanished", current_time,
